@@ -1,10 +1,18 @@
    <ui>
     <menubar>
       <menu name="_File" action="File">
-       <menuitem name="_New Module..." action="FileNew" />
-       <menuitem name="New _Text File" action="FileNewTextFile" />
-       <menuitem name="_Open..." action="FileOpen" />
-       <menuitem name="Open _Recent" action="RecentFiles"/>
+       <menu name="_New" action="FileNew">
+           <menuitem name="_Workspace..." action="FileNewWorkspace" />
+           <menuitem name="_Package..." action="FileNewPackage" />
+           <menuitem name="_Module..." action="FileNewModule" />
+           <menuitem name="_Text File..." action="FileNewTextFile" />
+       </menu>
+       <menu name="_Open" action="FileOpen">
+           <menuitem name="_Workspace..." action="FileOpenWorkspace" />
+           <menuitem name="_Package..." action="FileOpenPackage" />
+           <menuitem name="_File..." action="FileOpenFile" />
+       </menu>
+       <separator />
        <menuitem name="_Save" action="FileSave" />
        <menuitem name="Save _As..." action="FileSaveAs" />
        <menuitem name="Save _All" action="FileSaveAll" />
@@ -12,6 +20,12 @@
        <menuitem name="_Close" action="FileClose" />
        <menuitem name="_Print File" action="FilePrint" />
        <separator/>
+       <menu name="Recent Files" action="FileRecentFiles">
+       </menu>
+       <menu name="Recent Workspaces" action="FileRecentWorkspaces">
+       </menu>
+       <separator/>
+       <menuitem name="Close Workspace" action="FileCloseWorkspace" />
        <menuitem name="Close All" action="FileCloseAll" />
        <menuitem name="Close All but Package" action="FileCloseAllButPackage" />
        <menuitem name="Close All but Workspace" action="FileCloseAllButWorkspace" />
@@ -44,11 +58,9 @@
        <menuitem name="Align ::" action="EditAlignTypeSig" />
      </menu>
     <menu name="_Workspace" action="Workspace">
-       <menuitem name="_New..." action="NewWorkspace" />
-       <menuitem name="_Open..." action="OpenWorkspace" />
-       <menuitem name="Open _Recent" action="RecentWorkspaces"/>
-       <menuitem name="_Close" action="CloseWorkspace" />
-       <separator/>
+       <menuitem name="_Add Package" action="WorkspaceAddPackage" />
+       <menuitem name="_Add Package From Source Repository..." action="ClonePackage" />
+       <separator />
        <menuitem name="_Clean" action="CleanWorkspace" />
        <menuitem name="_Make" action="MakeWorkspace" />
        <separator/>
@@ -57,9 +69,6 @@
        <menuitem name="Resol_ve Errors" action="ResolveErrors" />
      </menu>
     <menu name="_Package" action="Package">
-       <menuitem name="_New..." action="NewPackage" />
-       <menuitem name="_Add..." action="AddPackage" />
-       <menuitem name="_Add From Source Repository..." action="ClonePackage" />
        <menu name="_Edit" action="PackageEdit">
           <menuitem name="With _Package Editor" action="EditPackage" />
           <menuitem name="With _Text Editor" action="EditPackageText" />
@@ -174,8 +183,8 @@
     <toolbar name="toolbar">
      <placeholder name="FileToolItems">
        <separator/>
-       <toolitem name="New" action="FileNew"/>
-       <toolitem name="Open" action="FileOpen"/>
+       <toolitem name="New Module" action="FileNewModule"/>
+       <toolitem name="Open" action="FileOpenFile"/>
        <toolitem name="Save" action="FileSave"/>
        <toolitem name="Close" action="ViewClosePane"/>
        <separator/>

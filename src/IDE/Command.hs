@@ -55,7 +55,8 @@ import Graphics.UI.Gtk
         actionGroupNew, UIManager, widgetShowAll, menuItemSetSubmenu,
         widgetDestroy, menuItemGetSubmenu, menuShellAppend,
         menuItemActivate, menuItemNewWithLabel, menuNew, Packing(..),
-        ToolbarStyle(..), PositionType(..), on, IconSize(..), Modifier(..))
+        ToolbarStyle(..), PositionType(..), on, IconSize(..), Modifier(..),
+        widgetSetSensitive)
 import System.FilePath
 import Data.Version
 import Prelude hiding (catch)
@@ -105,7 +106,7 @@ import IDE.Pane.WebKit.Output (getOutputPane)
 import IDE.Pane.WebKit.Inspect (getInspectPane)
 import IDE.Pane.Files (refreshFiles, getFiles)
 import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, forM_, filterM)
 import Control.Monad.Trans.Reader (ask)
 import System.Log.Logger (debugM)
 import Foreign.C.Types (CInt(..))
@@ -142,13 +143,24 @@ mkActions =
     AD "vcs" (__ "Version Con_trol") Nothing Nothing (return ()) [] False
     ,AD "FilePrint" (__ "_Print File") Nothing Nothing filePrint [] False
     ,AD "File" (__ "_File") Nothing Nothing (return ()) [] False
-    ,AD "FileNew" (__ "_New Module...") Nothing (Just "gtk-new")
+    ,AD "FileNew" (__ "_New") Nothing Nothing (return ()) [] False
+    ,AD "FileNewWorkspace" (__ "_Workspace...") Nothing Nothing
+        (workspaceNew >> showWorkspace) [] False
+    ,AD "FileNewPackage" (__ "_Package...") Nothing Nothing
+        (showWorkspace >> workspaceTry workspacePackageNew) [] False
+    ,AD "FileNewModule" (__ "_Module...") Nothing (Just "gtk-new")
         (packageTry $ addModule []) [] False
-    ,AD "FileNewTextFile" (__ "_New Text File") Nothing Nothing
+    ,AD "FileNewTextFile" (__ "_Text File...") Nothing Nothing
         fileNew [] False
-    ,AD "FileOpen" (__ "_Open...") Nothing (Just "gtk-open")
+    ,AD "FileOpen" (__ "_Open") Nothing Nothing (return ()) [] False
+    ,AD "FileOpenWorkspace" (__ "_Workspace...") Nothing Nothing
+        (workspaceOpen >> showWorkspace) [] False
+    ,AD "FileOpenPackage" (__ "_Package...") Nothing Nothing
+        (showWorkspace >> workspaceTry workspaceAddPackage) [] False
+    ,AD "FileOpenFile" (__ "_File...") Nothing (Just "gtk-open")
         fileOpen [] False
-    ,AD "RecentFiles" (__ "Open _Recent") Nothing Nothing (return ()) [] False
+    ,AD "FileRecentFiles" (__ "_Recent Files") Nothing Nothing (return ()) [] False
+    ,AD "FileRecentWorkspaces" (__ "Recent Workspaces") Nothing Nothing (return ()) [] False
     ,AD "FileRevert" (__ "_Revert") Nothing Nothing
         fileRevert [] False
     ,AD "FileSave" (__ "_Save") Nothing (Just "gtk-save")
@@ -159,6 +171,8 @@ mkActions =
         (do fileSaveAll (\ b -> return (bufferName b /= "_Eval.hs")); return ()) [] False
     ,AD "FileClose" (__ "_Close") Nothing (Just "gtk-close")
         (do fileClose; return ()) [] False
+    ,AD "FileCloseWorkspace" (__ "Close Workspace") Nothing Nothing
+        workspaceClose [] False
     ,AD "FileCloseAll" (__ "Close All") Nothing Nothing
         (do fileCloseAll (\ b -> return (bufferName b /= "_Eval.hs")); return ()) [] False
     ,AD "FileCloseAllButPackage" (__ "Close All But Package") Nothing Nothing
@@ -212,14 +226,8 @@ mkActions =
         (align ':') [] False
 
     ,AD "Workspace" (__ "_Workspace") Nothing Nothing (return ()) [] False
-    ,AD "NewWorkspace" (__ "_New...") Nothing Nothing
-        (workspaceNew >> showWorkspace) [] False
-    ,AD "OpenWorkspace" (__ "_Open...") Nothing Nothing
-        (workspaceOpen >> showWorkspace) [] False
-    ,AD "RecentWorkspaces" (__ "Open _Recent") Nothing Nothing (return ()) [] False
-    ,AD "CloseWorkspace" (__ "_Close") Nothing Nothing
-        workspaceClose [] False
-
+    ,AD "WorkspaceAddPackage" (__ "_Add Package...") Nothing Nothing
+        (showWorkspace >> workspaceTry workspaceAddPackage) [] False
     ,AD "CleanWorkspace" (__ "Cl_ean") (Just (__ "Cleans all packages")) (Just "ide_clean")
         (workspaceTry workspaceClean) [] False
     ,AD "MakeWorkspace" (__ "_Make") (Just (__ "Makes all of this workspace")) (Just "ide_configure")
@@ -230,11 +238,7 @@ mkActions =
         previousError [] False
 
     ,AD "Package" (__ "_Package") Nothing Nothing (return ()) [] False
-    ,AD "NewPackage" (__ "_New...") Nothing Nothing
-        (showWorkspace >> workspaceTry workspacePackageNew) [] False
-    ,AD "AddPackage" (__ "_Add...") Nothing Nothing
-        (showWorkspace >> workspaceTry workspaceAddPackage) [] False
-    ,AD "ClonePackage" (__ "Add From Source _Repository...") Nothing Nothing
+    ,AD "ClonePackage" (__ "Add Package From Source _Repository...") Nothing Nothing
         (showWorkspace >> workspaceTry workspacePackageClone) [] False
 --    ,AD "RecentPackages" "_Recent Packages" Nothing Nothing (return ()) [] False
     ,AD "PackageEdit" (__ "_Edit") Nothing Nothing (return ()) [] False
@@ -509,28 +513,40 @@ updateRecentEntries = do
     recentFiles'       <-  readIDE recentFiles
     recentWorkspaces'  <-  readIDE recentWorkspaces
     recentFilesItem    <-  getRecentFiles
-    recentWorkspacesItem <-  getRecentWorkspaces
+    recentWorkspacesItem <- getRecentWorkspaces
     reifyIDE (\ ideR -> do
         recentFilesMenu    <-  menuNew
-        mapM_ (\s -> do
-            fe <- doesFileExist s
-            when fe $ do
-                mi <- menuItemNewWithLabel $ T.pack s
-                mi `on` menuItemActivate $ reflectIDE (fileOpenThis s) ideR
-                menuShellAppend recentFilesMenu mi) recentFiles'
+        existingRecentFiles <- filterM doesFileExist recentFiles'
+        if null existingRecentFiles
+            then do
+                mi <- menuItemNewWithLabel (T.pack "No recently opened files")
+                widgetSetSensitive mi False
+                menuShellAppend recentFilesMenu mi
+            else
+                forM_ recentFiles' $ \s -> do
+                    mi <- menuItemNewWithLabel $ T.pack s
+                    mi `on` menuItemActivate $ reflectIDE (fileOpenThis s) ideR
+                    menuShellAppend recentFilesMenu mi
         oldSubmenu <- menuItemGetSubmenu recentFilesItem
         when (isJust oldSubmenu) $ do
             widgetHide (fromJust oldSubmenu)
             widgetDestroy (fromJust oldSubmenu)
         menuItemSetSubmenu recentFilesItem recentFilesMenu
         widgetShowAll recentFilesMenu
+
         recentWorkspacesMenu    <-  menuNew
-        mapM_ (\s -> do
-            fe <- doesFileExist s
-            when fe $ do
-                mi <- menuItemNewWithLabel $ T.pack s
-                mi `on` menuItemActivate $ reflectIDE (workspaceOpenThis True (Just s) >> showWorkspace) ideR
-                menuShellAppend recentWorkspacesMenu mi) recentWorkspaces'
+        existingRecentWorkspaces <- filterM doesFileExist recentWorkspaces'
+        if null existingRecentWorkspaces
+            then do
+                mi <- menuItemNewWithLabel (T.pack "No recently opened workspaces")
+                widgetSetSensitive mi False
+                menuShellAppend recentWorkspacesMenu mi
+            else
+                forM_ existingRecentWorkspaces $ \s -> do
+                    mi <- menuItemNewWithLabel $ T.pack s
+                    mi `on` menuItemActivate $ reflectIDE (workspaceOpenThis True (Just s) >> showWorkspace) ideR
+                    menuShellAppend recentWorkspacesMenu mi
+
         oldSubmenu <- menuItemGetSubmenu recentWorkspacesItem
         when (isJust oldSubmenu) $ do
             widgetHide (fromJust oldSubmenu)
