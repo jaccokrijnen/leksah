@@ -108,24 +108,29 @@ debugCommand command handler = do
 debugCommand' :: Text -> C.Sink ToolOutput IDEM () -> DebugAction
 debugCommand' command handler = do
     ghci <- ask
-    lift $ catchIDE (runDebug (executeDebugCommand command handler) ghci)
+    lift $ catchIDE (runDebugM (executeDebugCommand command handler) ghci)
         (\(e :: SomeException) -> (print e))
 
+-- DEPRECATED
+-- | Called when the debug button is toggled
 debugToggled :: IDEAction
 debugToggled = do
-    toggled <- getDebugToggled
-    maybeDebug <- readIDE debugState
-    case (toggled, maybeDebug) of
-        (True, Nothing) -> packageTry debugStart
-        (False, Just _) -> debugQuit
-        _               -> return ()
+    return ()
+--    toggled <- getDebugToggled
+--    maybeDebug <- readIDE debugState
+--    case (toggled, maybeDebug) of
+--        (True, Nothing) -> packageTry debugStart
+--        (False, Just _) -> debugQuit
+--        _               -> return ()
 
+-- DEPRECATED
 debugQuit :: IDEAction
 debugQuit = do
-    maybeDebug <- readIDE debugState
-    case maybeDebug of
-        Just debug -> runDebug (debugCommand ":quit" logOutputDefault) debug
-        _          -> return ()
+    return ()
+--    maybeDebug <- readIDE debugState
+--    case maybeDebug of
+--        Just debug -> runDebugM (debugCommand ":quit" logOutputDefault) debug
+--        _          -> return ()
 
 -- | Remove haddock code prefix from selected text so it can be run
 -- in ghci
@@ -214,12 +219,14 @@ debugForward = packageTry $ do
         (debugPackage, _) <- ask
         debugCommand ":forward" (logOutputForHistoricContextDefault debugPackage)
 
+-- DEPRECATED
 debugStop :: IDEAction
 debugStop = do
-    maybeDebug <- readIDE debugState
-    liftIO $ case maybeDebug of
-        Just (_, ghci) -> toolProcess ghci >>= interruptProcessGroupOf
-        Nothing -> return ()
+    return ()
+--    maybeDebug <- readIDE debugState
+--    liftIO $ case maybeDebug of
+--        Just (_, ghci) -> toolProcess ghci >>= interruptProcessGroupOf
+--        Nothing -> return ()
 
 debugContinue :: IDEAction
 debugContinue = packageTry $ tryDebug $ do

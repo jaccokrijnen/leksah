@@ -38,11 +38,11 @@ module IDE.Core.Types (
 
 ,   PackageM
 ,   PackageAction
-,   runPackage
+,   runPackageM
 
 ,   DebugM
 ,   DebugAction
-,   runDebug
+,   runDebugM
 
 ,   IDEPackage(..)
 ,   ipdBuildDir
@@ -172,7 +172,8 @@ data IDE            =  IDE {
 ,   recentFiles     ::   [FilePath]
 ,   recentWorkspaces ::  [FilePath]
 ,   runningTool     ::   Maybe ProcessHandle
-,   debugState      ::   Maybe (IDEPackage, ToolState)
+,   packageToGhci   ::   Map IDEPackage ToolState
+-- ,   debugState      ::   Maybe (IDEPackage, ToolState)
 ,   completion      ::   ((Int, Int), Maybe CompletionWindow)
 ,   yiControl       ::   Yi.Control
 ,   serverQueue     ::   Maybe (MVar (ServerCommand, ServerAnswer -> IDEM ()))
@@ -180,7 +181,7 @@ data IDE            =  IDE {
 ,   hlintQueue      ::   Maybe (TVar [Either FilePath FilePath])
 ,   vcsData         ::   (Map FilePath MenuItem, Maybe (Maybe Text)) -- menus for packages, password
 ,   logLaunches     ::   Map.Map Text LogLaunchData
-,   autoCommand     ::   IDEAction
+,   autoCommand     ::   IDEAction -- ^ Action to be run when ghci reloads
 ,   autoURI         ::   Maybe Text
 } --deriving Show
 
@@ -258,8 +259,8 @@ type PackageAction = PackageM ()
 instance MonadIDE PackageM where
     liftIDE = lift . lift
 
-runPackage :: PackageM a -> IDEPackage -> WorkspaceM a
-runPackage = runReaderT
+runPackageM :: PackageM a -> IDEPackage -> WorkspaceM a
+runPackageM = runReaderT
 
 -- ---------------------------------------------------------------------
 -- Monad for functions that need to use the GHCi debugger
@@ -267,8 +268,8 @@ runPackage = runReaderT
 type DebugM = ReaderT (IDEPackage, ToolState) IDEM
 type DebugAction = DebugM ()
 
-runDebug :: DebugM a -> (IDEPackage, ToolState) -> IDEM a
-runDebug = runReaderT
+runDebugM :: DebugM a -> (IDEPackage, ToolState) -> IDEM a
+runDebugM = runReaderT
 
 -- ---------------------------------------------------------------------
 -- Events which can be signalled and handled
@@ -394,8 +395,7 @@ data IDEPackage     =   IDEPackage {
 ,   ipdUnregisterFlags ::   [Text]
 ,   ipdSdistFlags      ::   [Text]
 ,   ipdSandboxSources  ::   [IDEPackage]
-}
-    deriving (Eq)
+} deriving Eq
 
 instance Show IDEPackage where
     show p = show "IDEPackage for " ++ (render . disp) (ipdPackageId p)
@@ -575,7 +575,7 @@ data LogRef = LogRef {
 ,   logRefIdea          ::   Maybe (Text, Idea)
 ,   logLines            ::   Maybe (Int, Int)
 ,   logRefType          ::   LogRefType
-}   deriving (Eq)
+} deriving (Eq)
 
 instance Show LogRef where
     show lr = T.unpack (refDescription lr) ++ displaySrcSpan (logRefSrcSpan lr)

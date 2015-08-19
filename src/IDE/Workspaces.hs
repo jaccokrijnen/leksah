@@ -64,7 +64,7 @@ import IDE.Pane.PackageEditor (packageNew', packageClone, choosePackageFile, sta
 import Data.List (delete)
 import IDE.Package
        (getModuleTemplate, getPackageDescriptionAndPath, activatePackage,
-        deactivatePackage, idePackageFromPath, idePackageFromPath)
+        deactivatePackage, idePackageFromPath, idePackageFromPath, getGhci)
 import System.Directory
        (getHomeDirectory, createDirectoryIfMissing, doesFileExist)
 import System.Time (getClockTime)
@@ -307,14 +307,14 @@ packageTryQuiet :: PackageAction -> IDEAction
 packageTryQuiet f = do
     maybePackage <- readIDE activePack
     case maybePackage of
-        Just p  -> workspaceTryQuiet $ runPackage f p
+        Just p  -> workspaceTryQuiet $ runPackageM f p
         Nothing -> ideMessage Normal (__ "No active package")
 
 packageTry :: PackageAction -> IDEAction
 packageTry f = workspaceTry $ do
         maybePackage <- lift $ readIDE activePack
         case maybePackage of
-            Just p  -> runPackage f p
+            Just p  -> runPackageM f p
             Nothing -> do
                 window <- lift getMainWindow
                 resp <- liftIO $ do
@@ -431,14 +431,13 @@ workspaceClean = do
         return (defaultMakeSettings prefs')
     makePackages settings (wsPackages ws) MoClean MoClean moNoOp
 
-buildSteps :: Bool -> IDEM [MakeOp]
-buildSteps runTests = do
-    debug <- isJust <$> readIDE debugState
-    return $ case (runTests, debug) of
-                (True, True)   -> [MoBuild,MoDocu]
-                (True, False)  -> [MoBuild,MoDocu,MoTest,MoCopy,MoRegister]
-                (False, True)  -> [MoBuild]
-                (False, False) -> [MoBuild,MoCopy,MoRegister]
+buildSteps :: Bool -> Bool -> [MakeOp]
+buildSteps runTests inGhci =
+    case (runTests, inGhci) of
+        (True, True)   -> [MoGhci,MoDocu]
+        (True, False)  -> [MoBuild,MoDocu,MoTest,MoCopy,MoRegister]
+        (False, True)  -> [MoGhci]
+        (False, False) -> [MoBuild,MoCopy,MoRegister]
 
 workspaceMake :: WorkspaceAction
 workspaceMake = do
@@ -448,16 +447,16 @@ workspaceMake = do
         return ((defaultMakeSettings prefs'){
                     msMakeMode           = True,
                     msBackgroundBuild    = False})
-    build <- lift . buildSteps $ msRunUnitTests settings
+    let build = buildSteps (msRunUnitTests settings) False
     let steps = MoComposed (MoConfigure : build)
     makePackages settings (wsPackages ws) steps steps MoMetaInfo
 
+-- | Runs ghci for all modified packages
 backgroundMake :: IDEAction
 backgroundMake = catchIDE (do
     ideR        <- ask
     prefs       <- readIDE prefs
     mbPackage   <- readIDE activePack
-    debug       <- isJust <$> readIDE debugState
     case mbPackage of
         Nothing         -> return ()
         Just package    -> do
@@ -467,34 +466,28 @@ backgroundMake = catchIDE (do
             let isModified = not (null modifiedPacks)
             when isModified $ do
                 let settings = defaultMakeSettings prefs
-                steps <- buildSteps $ msRunUnitTests settings
-                workspaceTryQuiet $ if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
-                    then makePackages settings modifiedPacks (MoComposed steps) (MoComposed []) moNoOp
-                    else makePackages settings modifiedPacks (MoComposed steps)
-                                        (MoComposed (MoConfigure:steps)) MoMetaInfo
+                workspaceTryQuiet $
+                    makePackages settings modifiedPacks MoGhci (MoComposed []) moNoOp
     )
     (\(e :: Exc.SomeException) -> sysMessage Normal (T.pack $ show e))
 
 makePackage ::  PackageAction
 makePackage = do
-  p <- ask
-  liftIDE $ do
-    getLog >>= liftIO . bringPaneToFront
-    showDefaultLogLaunch'
-    prefs' <- readIDE prefs
-    mbWs   <- readIDE workspace
-    let settings = (defaultMakeSettings prefs'){msBackgroundBuild = False}
-    case mbWs of
-        Nothing -> sysMessage Normal (__ "No workspace for build.")
-        Just ws -> do
-            debug <- isJust <$> readIDE debugState
-            steps <- buildSteps $ msRunUnitTests settings
-            if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
-                then runWorkspace
-                        (makePackages settings [p] (MoComposed steps) (MoComposed []) moNoOp) ws
-                else
-                    runWorkspace
-                        (makePackages settings [p]
-                        (MoComposed steps)
-                        (MoComposed (MoConfigure:steps))
-                        MoMetaInfo) ws
+    p <- ask
+    liftIDE $ do
+        prefs' <- readIDE prefs
+        mbWs   <- readIDE workspace
+        let settings = (defaultMakeSettings prefs'){msBackgroundBuild = False}
+        case mbWs of
+            Nothing -> sysMessage Normal (__ "No workspace for build.")
+            Just ws -> do
+                let steps = buildSteps (msRunUnitTests settings) False
+--                if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
+--                    then runWorkspace
+--                            (makePackages settings [p] (MoComposed steps) (MoComposed []) moNoOp) ws
+--                    else
+                runWorkspace
+                    (makePackages settings [p]
+                    (MoComposed steps)
+                    (MoComposed (MoConfigure:steps))
+                    MoMetaInfo) ws

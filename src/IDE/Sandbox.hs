@@ -33,7 +33,7 @@ import qualified Data.Conduit.List as CL (fold)
 import IDE.Utils.Tool (ToolOutput(..))
 import IDE.Utils.GUIUtils (__, chooseDir)
 import IDE.Core.State (PackageAction, readIDE, prefs, ipdBuildDir, getMainWindow,
-            Workspace, wsFile, liftIDE, IDEPackage, IDEM, runPackage, LogLaunch)
+            Workspace, wsFile, liftIDE, IDEPackage, IDEM, runPackageM, LogLaunch)
 import IDE.Pane.Log (getDefaultLogLaunch)
 import IDE.Utils.ExternalTool (runExternalTool')
 import IDE.LogRef (logOutput)
@@ -51,7 +51,7 @@ logSandbox package logLaunch = do
     let log = logOutput logLaunch
     mbLastOutput <- C.getZipSink $ const <$> C.ZipSink sinkLast <*> C.ZipSink log
     when (mbLastOutput == Just (ToolExit ExitSuccess)) .
-        lift $ workspaceTryQuiet (runPackage (void $ refreshPackage log) package)
+        lift $ workspaceTryQuiet (runPackageM (void $ refreshPackage log) package)
 
 sandboxInit :: PackageAction
 sandboxInit = do

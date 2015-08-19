@@ -1013,6 +1013,7 @@ fileCheckBuffer nb _ ebuf ideBuf i = do
                 return (modifiedOnDisk || modifiedInBuffer)
         else return False
 
+-- | Returns all projects for which files haves changed
 fileCheckAll :: MonadIDE m => (IDEBuffer -> m [alpha]) -> m [alpha]
 fileCheckAll filterFunc = do
     bufs     <- allBuffers
@@ -1447,7 +1448,7 @@ belongsToPackages IDEBuffer{fileName = Just fp}= do
                             return res
 belongsToPackages _ = return []
 
--- | Checks whether a file belongs to a package (includes files in 
+-- | Checks whether a file belongs to a package (includes files in
 -- sandbox source dirs)
 belongsToPackage :: FilePath -> IDEPackage -> Bool
 belongsToPackage f = any (`isSubPath` f) . ipdAllDirs

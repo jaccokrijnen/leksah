@@ -37,8 +37,8 @@ import Data.List (delete, nub, (\\), find)
 import Distribution.Version (withinRange)
 import Data.Maybe (fromMaybe, mapMaybe)
 import IDE.Package
-       (packageClean', packageCopy', packageRegister', buildPackage, packageConfig',
-        packageTest', packageDoc')
+       (packageClean', packageCopy', packageRegister', packageBuild', packageConfig',
+        packageTest', packageDoc', packageGhci')
 import IDE.Core.Types
        (IDEEvent(..), Prefs(..), IDE(..), WorkspaceAction)
 import Control.Event (EventSource(..))
@@ -80,6 +80,7 @@ defaultMakeSettings prefs = MakeSettings  {
 data MakeOp =
     MoConfigure
     | MoBuild
+    | MoGhci
     | MoTest
     | MoCopy
     | MoRegister
@@ -200,9 +201,11 @@ doBuildChain :: MakeSettings -> Chain MakeOp IDEPackage -> IDEAction
 doBuildChain _ EmptyChain = return ()
 doBuildChain ms chain@Chain{mcAction = MoConfigure} =
     postAsyncIDE $ packageConfig' (mcEle chain) (constrCont ms (mcPos chain) (mcNeg chain))
+doBuildChain ms chain@Chain{mcAction = MoGhci} =
+    postAsyncIDE $ packageGhci' (msJumpToWarnings ms) (mcEle chain) (constrCont ms (mcPos chain) (mcNeg chain))
 doBuildChain ms chain@Chain{mcAction = MoBuild} =
-    postAsyncIDE $ buildPackage (msBackgroundBuild ms) (msJumpToWarnings ms) (not (msMakeMode ms) && msSingleBuildWithoutLinking ms)
-        (mcEle chain) (constrCont ms (mcPos chain) (mcNeg chain))
+    postAsyncIDE $ packageBuild' (msJumpToWarnings ms)
+        True (mcEle chain) (constrCont ms (mcPos chain) (mcNeg chain))
 doBuildChain ms chain@Chain{mcAction = MoDocu} =
     postAsyncIDE $ packageDoc' (msBackgroundBuild ms) (msJumpToWarnings ms) (mcEle chain) (constrCont ms (mcPos chain) (mcNeg chain))
 doBuildChain ms chain@Chain{mcAction = MoTest} =

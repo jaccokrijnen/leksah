@@ -390,7 +390,7 @@ startMainWindow yiControl sessionFP mbWorkspaceFP sourceFPs startupPrefs isFirst
           ,   recentFiles       =   []
           ,   recentWorkspaces  =   []
           ,   runningTool       =   Nothing
-          ,   debugState        =   Nothing
+          ,   packageToGhci     =   Map.empty
           ,   completion        =   ((750,400),Nothing)
           ,   yiControl         =   yiControl
           ,   serverQueue       =   Nothing

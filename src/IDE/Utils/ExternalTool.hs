@@ -138,6 +138,8 @@ runExternalTool runGuard pidHandler description executable args dir handleOutput
 -- ---------------------------------------------------------------------
 -- | Handling of Compiler errors
 --
+
+-- | Checks whether the current tool (process) is running
 isRunning :: MonadIDE m => m Bool
 isRunning = do
     maybeProcess <- readIDE runningTool
@@ -147,6 +149,7 @@ isRunning = do
                 isNothing <$> getProcessExitCode process
             Nothing -> return False
 
+-- | Interrupts the current tool (sends interrupt to process)
 interruptBuild :: MonadIDE m => m ()
 interruptBuild = do
     maybeProcess <- readIDE runningTool

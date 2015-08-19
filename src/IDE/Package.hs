@@ -20,8 +20,10 @@
 module IDE.Package (
     packageConfig
 ,   packageConfig'
-,   buildPackage
-
+,   packageGhci
+,   packageGhci'
+,   packageBuild
+,   packageBuild'
 ,   packageDoc
 ,   packageDoc'
 ,   packageClean
@@ -66,7 +68,7 @@ module IDE.Package (
 
 ,   idePackageFromPath
 ,   refreshPackage
-
+,   getGhci
 ) where
 
 import Graphics.UI.Gtk
@@ -123,9 +125,16 @@ import Data.Monoid ((<>))
 import qualified Data.Text.IO as T (readFile)
 import qualified Text.Printf as S (printf)
 import Text.Printf (PrintfType)
+import qualified Data.Map as Map
 
 printf :: PrintfType r => Text -> r
 printf = S.printf . T.unpack
+
+getGhci :: MonadIDE m => IDEPackage -> m (Maybe ToolState)
+getGhci pkg = liftIDE $ do
+    pkgToGhci <- readIDE packageToGhci
+    return (Map.lookup pkg pkgToGhci)
+
 
 -- | Get the last item
 sinkLast = CL.fold (\_ a -> Just a) Nothing
@@ -166,6 +175,7 @@ activatePackage mbPath mbPack mbExe = do
 deactivatePackage :: IDEAction
 deactivatePackage = activatePackage Nothing Nothing Nothing
 
+-- |
 interruptSaveAndRun :: MonadIDE m => IDEAction -> m ()
 interruptSaveAndRun action = do
     ideR <- liftIDE ask
@@ -187,6 +197,12 @@ interruptSaveAndRun action = do
         when (saveAllBeforeBuild prefs) . liftIDE . void $ fileSaveAll belongsToWorkspace
         action
 
+-- * Package actions
+--
+-- Many of these wrap a cabal command. `PackageAction` that have to handle
+-- output (e.g. 'packageBuild') take a 'Sink' as argument to process the output.
+
+-- | Runs @cabal configure@
 packageConfig :: PackageAction
 packageConfig = do
     package <- ask
@@ -216,25 +232,38 @@ packageConfig' package continuation = do
                     postAsyncIDE $ ideMessage Normal (__ "Can't read package file")
                     continuation False
                     return()
+packageGhci :: Bool -> PackageAction
+packageGhci jumpToWarnings = do
+    pkg <- ask
+    liftIDE $ packageGhci' jumpToWarnings pkg (\_ -> return ())
 
-runCabalBuild :: Bool -> Bool -> Bool -> IDEPackage -> Bool -> (Bool -> IDEAction) -> IDEAction
-runCabalBuild backgroundBuild jumpToWarnings withoutLinking package shallConfigure continuation = do
+packageGhci' :: Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
+packageGhci' jumpToWarnings package continuation = do
+    ideMessage Normal "Running Dummy Repl ..."
+    continuation True
+
+packageBuild :: Bool -> Bool -> PackageAction
+packageBuild jumpToWarnings shallConfigure = do
+    package <- ask
+    liftIDE $ packageBuild' jumpToWarnings shallConfigure package (\_ -> return ())
+
+
+packageBuild' :: Bool -> Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
+packageBuild' jumpToWarnings shallConfigure package continuation = do
     prefs <- readIDE prefs
     let dir =  ipdBuildDir package
-    let args = ["build"]
-                ++ ["--with-ld=false" | backgroundBuild && withoutLinking]
-                ++ ipdBuildFlags package
+    let args = "build" : ipdBuildFlags package
     runExternalTool' (__ "Building") (cabalCommand prefs) args dir $ do
         (mbLastOutput, isConfigErr, _) <- C.getZipSink $ (,,)
             <$> C.ZipSink sinkLast
             <*> C.ZipSink isConfigError
-            <*> (C.ZipSink $ logOutputForBuild package backgroundBuild jumpToWarnings)
+            <*> (C.ZipSink $ logOutputForBuild package False jumpToWarnings)
         lift $ do
             errs <- readIDE errorRefs
             if shallConfigure && isConfigErr
                 then
                     packageConfig' package (\ b ->
-                        when b $ runCabalBuild backgroundBuild jumpToWarnings withoutLinking package False continuation)
+                        when b $ packageBuild' jumpToWarnings False package continuation)
                 else do
                     continuation (mbLastOutput == Just (ToolExit ExitSuccess))
                     return ()
@@ -248,49 +277,50 @@ isConfigError = CL.foldM (\a b -> return $ a || isCErr b) False
     str2 = __ "please re-configure"
     str3 = __ "cannot satisfy -package-id"
 
-buildPackage :: Bool -> Bool -> Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
-buildPackage backgroundBuild jumpToWarnings withoutLinking package continuation = catchIDE (do
-    ideR      <- ask
-    prefs     <- readIDE prefs
-    maybeDebug <- readIDE debugState
-    case maybeDebug of
-        Nothing -> do
-            alreadyRunning <- isRunning
-            if alreadyRunning
-                then do
-                    liftIO $ debugM "leksah" "buildPackage interruptBuild"
-                    interruptBuild
-                    unless backgroundBuild . liftIO $ do
-                        timeoutAddFull (do
-                            reflectIDE (do
-                                buildPackage backgroundBuild jumpToWarnings withoutLinking
-                                                package continuation
-                                return False) ideR
-                            return False) priorityDefault 100
-                        return ()
-                else do
-                    when (saveAllBeforeBuild prefs) . liftIDE . void $ fileSaveAll belongsToWorkspace
-                    runCabalBuild backgroundBuild jumpToWarnings withoutLinking package True $ \f -> do
-                        when f $ do
-                            mbURI <- readIDE autoURI
-                            case mbURI of
-                                Just uri -> postSyncIDE . loadOutputUri $ T.unpack uri
-                                Nothing  -> return ()
-                        continuation f
-        Just debug@(_, ghci) -> do
-            -- TODO check debug package matches active package
-            ready <- liftIO $ isEmptyMVar (currentToolCommand ghci)
-            when ready $ do
-                let dir = ipdBuildDir package
-                when (saveAllBeforeBuild prefs) (do fileSaveAll belongsToWorkspace; return ())
-                (`runDebug` debug) . executeDebugCommand ":reload" $ do
-                    errs <- logOutputForBuild package backgroundBuild jumpToWarnings
-                    unless (any isError errs) $ do
-                        cmd <- lift $ readIDE autoCommand
-                        liftIO . postGUISync $ reflectIDE cmd ideR
-                        lift $ continuation True
-    )
-    (\(e :: SomeException) -> sysMessage Normal (T.pack $ show e))
+-- | Deprecated
+--buildPackage :: Bool -> Bool -> Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
+--buildPackage backgroundBuild jumpToWarnings withoutLinking package continuation = catchIDE (do
+--    ideR      <- ask
+--    prefs     <- readIDE prefs
+--    maybeDebug <- getGhci package
+--    case maybeDebug of
+--        Nothing -> do
+--            alreadyRunning <- isRunning
+--            if alreadyRunning
+--                then do
+--                    liftIO $ debugM "leksah" "buildPackage interruptBuild"
+--                    interruptBuild
+--                    unless backgroundBuild . liftIO $ do
+--                        timeoutAddFull (do
+--                            reflectIDE (do
+--                                buildPackage backgroundBuild jumpToWarnings withoutLinking
+--                                                package continuation
+--                                return False) ideR
+--                            return False) priorityDefault 100
+--                        return ()
+--                else do
+--                    when (saveAllBeforeBuild prefs) . liftIDE . void $ fileSaveAll belongsToWorkspace
+--                    packageBuild' backgroundBuild jumpToWarnings withoutLinking True package $ \f -> do
+--                        when f $ do
+--                            mbURI <- readIDE autoURI
+--                            case mbURI of
+--                                Just uri -> postSyncIDE . loadOutputUri $ T.unpack uri
+--                                Nothing  -> return ()
+--                        continuation f
+--        Just ghci -> do
+--            -- TODO check debug package matches active package
+--            ready <- liftIO $ isEmptyMVar (currentToolCommand ghci)
+--            when ready $ do
+--                let dir = ipdBuildDir package
+--                when (saveAllBeforeBuild prefs) (do fileSaveAll belongsToWorkspace; return ())
+--                (`runDebugM` (package, ghci)) . executeDebugCommand ":reload" $ do
+--                    errs <- logOutputForBuild package backgroundBuild jumpToWarnings
+--                    unless (any isError errs) $ do
+--                        cmd <- lift $ readIDE autoCommand
+--                        liftIO . postGUISync $ reflectIDE cmd ideR
+--                        lift $ continuation True
+--    )
+--    (\(e :: SomeException) -> sysMessage Normal (T.pack $ show e))
 
 packageDoc :: PackageAction
 packageDoc = do
@@ -408,7 +438,7 @@ packageRun' removeGhcjsFlagIfPresent package =
                 _  -> return ()
         else liftIDE $ catchIDE (do
             ideR        <- ask
-            maybeDebug   <- readIDE debugState
+            mbGhci   <- getGhci package
             pd <- liftIO $ liftM flattenPackageDescription
                              (readPackageDescription normal (ipdCabalFile package))
             mbExe <- readIDE activeExe
@@ -416,7 +446,7 @@ packageRun' removeGhcjsFlagIfPresent package =
             let defaultLogName = T.pack . display . pkgName $ ipdPackageId package
                 logName = fromMaybe defaultLogName . listToMaybe $ map (T.pack . exeName) exe
             (logLaunch,logName) <- buildLogLaunchByName logName
-            case maybeDebug of
+            case mbGhci of
                 Nothing -> do
                     let dir = ipdBuildDir package
                     IDE.Package.runPackage (addLogLaunchData logName logLaunch)
@@ -429,16 +459,16 @@ packageRun' removeGhcjsFlagIfPresent package =
                                                 , ipdExeFlags package])
                                            dir
                                            (logOutput logLaunch)
-                Just debug ->
+                Just ghci ->
                     -- TODO check debug package matches active package
-                    runDebug (do
+                    runDebugM (do
                         case exe of
                             [Executable name mainFilePath _] ->
                                 executeDebugCommand (":module *" <> T.pack (map (\c -> if c == '/' then '.' else c) (takeWhile (/= '.') mainFilePath)))
                                                     (logOutput logLaunch)
                             _ -> return ()
                         executeDebugCommand (":main " <> T.unwords (ipdExeFlags package)) (logOutput logLaunch))
-                        debug)
+                        (package, ghci))
             (\(e :: SomeException) -> print e)
   where
     isActiveExe selected (Executable name _ _) = selected == Just (T.pack name)
@@ -468,9 +498,8 @@ packageRunJavaScript' addFlagIfMissing package =
                     packageConfig' packWithNewFlags $ \ ok -> when ok $
                         packageRunJavaScript' False packWithNewFlags
                 _  -> return ()
-        else liftIDE $ buildPackage False False True package $ \ ok -> when ok $ liftIDE $ catchIDE (do
-                ideR        <- ask
-                maybeDebug   <- readIDE debugState
+        else liftIDE $ packageBuild' False True package $ \ ok -> when ok $ liftIDE $ catchIDE (do
+                ideR     <- ask
                 pd <- liftIO $ liftM flattenPackageDescription
                                  (readPackageDescription normal (ipdCabalFile package))
                 mbExe <- readIDE activeExe
@@ -778,52 +807,57 @@ interactiveFlags prefs =
 
 debugStart :: PackageAction
 debugStart = do
-    package   <- ask
-    liftIDE $ catchIDE (do
-        ideRef     <- ask
-        prefs'     <- readIDE prefs
-        maybeDebug <- readIDE debugState
-        case maybeDebug of
-            Nothing -> do
-                let dir = ipdBuildDir package
-                mbExe <- readIDE activeExe
-                ghci <- reifyIDE $ \ideR -> newGhci dir mbExe (interactiveFlags prefs')
-                    $ reflectIDEI (void (logOutputForBuild package True False)) ideR
-                modifyIDE_ (\ide -> ide {debugState = Just (package, ghci)})
-                triggerEventIDE (Sensitivity [(SensitivityInterpreting, True)])
-                setDebugToggled True
-                -- Fork a thread to wait for the output from the process to close
-                liftIO $ forkIO $ do
-                    readMVar (outputClosed ghci)
-                    postGUISync . (`reflectIDE` ideRef) $ do
-                        setDebugToggled False
-                        modifyIDE_ (\ide -> ide {debugState = Nothing, autoCommand = return ()})
-                        triggerEventIDE (Sensitivity [(SensitivityInterpreting, False)])
-                        -- Kick of a build if one is not already due
-                        modifiedPacks <- fileCheckAll belongsToPackages
-                        let modified = not (null modifiedPacks)
-                        prefs <- readIDE prefs
-                        when (not modified && backgroundBuild prefs) $ do
-                            -- So although none of the pakages are modified,
-                            -- they may have been modified in ghci mode.
-                            -- Lets build to make sure the binaries are up to date
-                            mbPackage   <- readIDE activePack
-                            case mbPackage of
-                                Just package -> runCabalBuild True False False package True (\ _ -> return ())
-                                Nothing -> return ()
-                return ()
-            _ -> do
-                sysMessage Normal (__ "Debugger already running")
-                return ())
-            (\(e :: SomeException) -> print e)
+    return ()
+--    package   <- ask
+--    liftIDE $ catchIDE (do
+--        ideRef     <- ask
+--        prefs'     <- readIDE prefs
+--        mbGhci <- getGhci package
+--        case mbGhci of
+--            Nothing -> do
+--                let dir = ipdBuildDir package
+--                mbExe <- readIDE activeExe
+--                ghci <- reifyIDE $ \ideR -> newGhci dir mbExe (interactiveFlags prefs')
+--                    $ reflectIDEI (void (logOutputForBuild package True False)) ideR
+--                -- Add ghci to the current package
+--                modifyIDE_ (\ide -> ide {packageToGhci = Map.insert package ghci (packageToGhci ide)})
+--                triggerEventIDE (Sensitivity [(SensitivityInterpreting, True)])
+--                setDebugToggled True
+--                -- Fork a thread to wait for the output from the process to close
+--                liftIO $ forkIO $ do
+--                    readMVar (outputClosed ghci)
+--                    postGUISync . (`reflectIDE` ideRef) $ do
+--                        setDebugToggled False
+--                        -- Remove ghci from the current package, reset the 'autoCommand'
+--                        modifyIDE_ (\ide -> ide { packageToGhci = Map.delete package (packageToGhci ide)
+--                                                , autoCommand   = return ()})
+--                        triggerEventIDE (Sensitivity [(SensitivityInterpreting, False)])
+--                        -- Kick of a build if one is not already due
+--                        modifiedPacks <- fileCheckAll belongsToPackages
+--                        let modified = not (null modifiedPacks)
+--                        prefs <- readIDE prefs
+--                        when (not modified && backgroundBuild prefs) $ do
+--                            -- So although none of the pakages are modified,
+--                            -- they may have been modified in ghci mode.
+--                            -- Lets build to make sure the binaries are up to date
+--                            mbPackage   <- readIDE activePack
+--                            case mbPackage of
+--                                Just package -> packageBuild' True False False True package (\ _ -> return ())
+--                                Nothing -> return ()
+--                return ()
+--            _ -> do
+--                sysMessage Normal (__ "Debugger already running")
+--                return ())
+--            (\(e :: SomeException) -> print e)
 
 tryDebug :: DebugAction -> PackageAction
 tryDebug f = do
-    maybeDebug <- liftIDE $ readIDE debugState
-    case maybeDebug of
-        Just debug ->
+    package <- ask
+    mbGhci <- getGhci package
+    case mbGhci of
+        Just ghci ->
             -- TODO check debug package matches active package
-            liftIDE $ runDebug f debug
+            liftIDE $ runDebugM f (package, ghci)
         _ -> do
             window <- liftIDE getMainWindow
             resp <- liftIO $ do
@@ -838,19 +872,20 @@ tryDebug f = do
             case resp of
                 ResponseUser 1 -> do
                     debugStart
-                    maybeDebug <- liftIDE $ readIDE debugState
-                    case maybeDebug of
-                        Just debug -> liftIDE $ postAsyncIDE $ runDebug f debug
+                    mbDebug <- getGhci package
+                    case mbDebug of
+                        Just ghci -> liftIDE $ postAsyncIDE $ runDebugM f (package, ghci)
                         _ -> return ()
                 _  -> return ()
 
 tryDebugQuiet :: DebugAction -> PackageAction
 tryDebugQuiet f = do
-    maybeDebug <- liftIDE $ readIDE debugState
-    case maybeDebug of
-        Just debug ->
+    package <- ask
+    mbGhci <- getGhci package
+    case mbGhci of
+        Just ghci ->
             -- TODO check debug package matches active package
-            liftIDE $ runDebug f debug
+            liftIDE $ runDebugM f (package, ghci)
         _ ->
             return ()
 

@@ -29,7 +29,6 @@ module IDE.Core.State (
 ,   setCurrentError
 ,   setCurrentBreak
 ,   setCurrentContext
-,   isInterpreting
 
 ,   isStartingOrClosing
 
@@ -288,10 +287,6 @@ isStartingOrClosing ::  IDEState -> Bool
 isStartingOrClosing IsStartingUp    = True
 isStartingOrClosing IsShuttingDown  = True
 isStartingOrClosing _               = False
-
-isInterpreting :: MonadIDE m => m Bool
-isInterpreting =
-    readIDE debugState >>= \mb -> return (isJust mb)
 
 triggerEventIDE :: MonadIDE m => IDEEvent -> m IDEEvent
 triggerEventIDE e = liftIDE $ ask >>= \ideR -> triggerEvent ideR e
