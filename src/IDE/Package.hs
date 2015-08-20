@@ -69,6 +69,8 @@ module IDE.Package (
 ,   idePackageFromPath
 ,   refreshPackage
 ,   getGhci
+,   onPackageOpened
+,   onPackageClosed
 ) where
 
 import Graphics.UI.Gtk
@@ -96,7 +98,9 @@ import IDE.Utils.FileUtils(getConfigFilePathForLoad)
 import IDE.LogRef
 import Distribution.ModuleName (ModuleName(..))
 import Data.List (isInfixOf, nub, foldl', delete)
-import IDE.Utils.Tool (ToolOutput(..), runTool, newGhci, ToolState(..), toolline, ProcessHandle, executeGhciCommand)
+import IDE.Utils.Tool
+       (ToolCommand(..), ToolOutput(..), runTool, newGhci, ToolState(..),
+        toolline, ProcessHandle, executeGhciCommand)
 import qualified Data.Set as  Set (fromList)
 import qualified Data.Map as  Map (empty, fromList)
 import System.Exit (ExitCode(..))
@@ -134,6 +138,16 @@ getGhci :: MonadIDE m => IDEPackage -> m (Maybe ToolState)
 getGhci pkg = liftIDE $ do
     pkgToGhci <- readIDE packageToGhci
     return (Map.lookup pkg pkgToGhci)
+
+setGhci :: MonadIDE m => IDEPackage -> ToolState -> m ()
+setGhci pkg ghci = liftIDE $ do
+    mbGhci <- getGhci pkg
+    case mbGhci of
+        Just _ -> ideMessage Normal "Package already has GHCi running"
+        Nothing -> do
+            pkgToGhci <- readIDE packageToGhci
+            modifyIDE_ (\ide -> ide {packageToGhci = Map.insert pkg ghci pkgToGhci})
+
 
 
 -- | Get the last item
@@ -199,8 +213,9 @@ interruptSaveAndRun action = do
 
 -- * Package actions
 --
--- Many of these wrap a cabal command. `PackageAction` that have to handle
--- output (e.g. 'packageBuild') take a 'Sink' as argument to process the output.
+-- These wrap a cabal command. Some come as an `IDEAction` as well, taking a continuation
+-- for the rest of the build chain (see `IDE.Build`)
+-- `PackageAction`s that have to handle the output of the tool (e.g. `packageBuild`) take a 'Sink' as argument.
 
 -- | Runs @cabal configure@
 packageConfig :: PackageAction
@@ -232,20 +247,38 @@ packageConfig' package continuation = do
                     postAsyncIDE $ ideMessage Normal (__ "Can't read package file")
                     continuation False
                     return()
+
+-- | Reloads ghci
 packageGhci :: Bool -> PackageAction
 packageGhci jumpToWarnings = do
     pkg <- ask
-    liftIDE $ packageGhci' jumpToWarnings pkg (\_ -> return ())
+    interruptSaveAndRun $ packageGhci' jumpToWarnings pkg (\_ -> return ())
+
 
 packageGhci' :: Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
 packageGhci' jumpToWarnings package continuation = do
-    ideMessage Normal "Running Dummy Repl ..."
-    continuation True
+    mbGhci <- getGhci package
+    case mbGhci of
+        Nothing -> ideMessage Normal $
+            "Could not perform background build because GHCi is not running for package "
+            <> packageIdentifierToString (ipdPackageId package)
+        Just ghci -> do
+            ideR  <- ask
+            ready <- liftIO $ isEmptyMVar (currentToolCommand ghci)
+            when ready $ do
+                let reload = executeDebugCommand ":reload" $ do
+                        errs <- logOutputForBuild package True jumpToWarnings
+                        unless (any isError errs) $ do
+                            cmd <- lift $ readIDE autoCommand
+                            liftIO . postGUISync $ reflectIDE cmd ideR
+                            lift $ continuation True
+                runDebugM reload (package, ghci)
+            continuation True
 
-packageBuild :: Bool -> Bool -> PackageAction
+packageBuild ::  Bool -> Bool -> PackageAction
 packageBuild jumpToWarnings shallConfigure = do
     package <- ask
-    liftIDE $ packageBuild' jumpToWarnings shallConfigure package (\_ -> return ())
+    interruptSaveAndRun $ packageBuild' jumpToWarnings shallConfigure package (\_ -> return ())
 
 
 packageBuild' :: Bool -> Bool -> IDEPackage -> (Bool -> IDEAction) -> IDEAction
@@ -983,6 +1016,9 @@ idePackageFromPath log filePath = do
             s <- liftM catMaybes . mapM idePackageFromPath' $ nub sandboxSources
             return . Just $ rootPackage {ipdSandboxSources = s}
 
+
+-- | Reads the cabal file of the given package and updates the `IDEPackage` present
+-- in the `Workspace`.
 refreshPackage :: C.Sink ToolOutput IDEM () -> PackageM (Maybe IDEPackage)
 refreshPackage log = do
     package <- ask
@@ -996,4 +1032,28 @@ refreshPackage log = do
             Nothing -> do
                 postAsyncIDE $ ideMessage Normal (__ "Can't read package file")
                 return Nothing
+
+-- | Called when the `PackageOpened` event triggered
+onPackageOpened :: IDEPackage -> IDEAction
+onPackageOpened pkg = do
+    liftIO $ debugM "leksah" "onPackageOpened"
+    let dir = ipdBuildDir pkg
+    prefs   <- readIDE prefs
+    mbExe   <- readIDE activeExe
+    ideR    <- ask
+    ghci    <- liftIO $ newGhci dir mbExe (interactiveFlags prefs) $ do
+                   reflectIDEI (void (logOutputForBuild pkg True False)) ideR
+    setGhci pkg ghci
+    return ()
+
+-- | Called when the `PackageClosed` event triggered
+onPackageClosed :: IDEPackage -> IDEAction
+onPackageClosed pkg = do
+    liftIO $ debugM "leksah" "onPackageClosed"
+    mbGhci <- getGhci pkg
+    case mbGhci of
+        Nothing -> ideMessage Normal ("Ghci already closed for package " <> packageIdentifierToString (ipdPackageId pkg))
+        Just ghci -> do
+            runDebugM (executeDebugCommand ":quit" logOutputDefault) (pkg, ghci)
+
 

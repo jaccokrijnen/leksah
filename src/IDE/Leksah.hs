@@ -303,15 +303,15 @@ mainLoopSingleThread onIdle = eventsPending >>= loop False 50
   where
     loop :: Bool -> Int -> Int -> IO ()
     loop False delay 0 | delay > 2000 = onIdle >> loop True delay 0
-    loop isIdle delay n = do
-        quit <- if n > 0
+    loop isIdle delay amountEvents = do
+        quit <- if amountEvents > 0
                     then do
                         timeout <- timeoutAddFull (yield >> return True) priorityLow 10
-                        quit <- loopn (n+2)
+                        quit <- loopn (amountEvents+2)
                         timeoutRemove timeout
                         return quit
                     else
-                        loopn (n+2)
+                        loopn (amountEvents+2)
         unless quit $ do
                 yield
                 pending <- eventsPending
@@ -319,7 +319,7 @@ mainLoopSingleThread onIdle = eventsPending >>= loop False 50
                     then loop False 50 pending
                     else do
                         threadDelay delay
-                        eventsPending >>= loop isIdle (if n > 0
+                        eventsPending >>= loop isIdle (if amountEvents > 0
                                                             then 50
                                                             else min (delay+delay) 50000)
 

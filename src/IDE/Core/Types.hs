@@ -301,6 +301,11 @@ data IDEEvent  =
     |   WorkspaceChanged Bool Bool -- ^ showPane updateFileCache
     |   SelectSrcSpan (Maybe SrcSpan)
     |   SavedFile FilePath
+    |   PackageOpened IDEPackage
+    |   PackageClosed IDEPackage
+    |   WorkspaceOpened Workspace
+    |   WorkspaceClosed Workspace
+
 
 instance Event IDEEvent Text where
     getSelector (InfoChanged _)         =   "InfoChanged"
@@ -328,6 +333,11 @@ instance Event IDEEvent Text where
     getSelector (WorkspaceChanged _ _)  =   "WorkspaceChanged"
     getSelector (SelectSrcSpan _)       =   "SelectSrcSpan"
     getSelector (SavedFile _)           =   "SavedFile"
+    getSelector (PackageOpened _)       =   "PackageOpened"
+    getSelector (PackageClosed _)       =   "PackageClosed"
+    getSelector (WorkspaceOpened _)     =   "WorkspaceOpened"
+    getSelector (WorkspaceClosed _)     =   "WorkspaceClosed"
+
 
 instance EventSource IDERef IDEEvent IDEM Text where
     canTriggerEvent _ "InfoChanged"         = True
@@ -357,6 +367,10 @@ instance EventSource IDERef IDEEvent IDEM Text where
     canTriggerEvent _ "WorkspaceChanged"    = True
     canTriggerEvent _ "SelectSrcSpan"       = True
     canTriggerEvent _ "SavedFile"           = True
+    canTriggerEvent _ "PackageOpened"       = True
+    canTriggerEvent _ "PackageClosed"       = True
+    canTriggerEvent _ "WorkspaceOpened"     = True
+    canTriggerEvent _ "WorkspaceClosed"     = True
     canTriggerEvent _ _                   = False
     getHandlers ideRef = do
         ide <- liftIO $ readIORef ideRef

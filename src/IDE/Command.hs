@@ -943,6 +943,14 @@ registerLeksahEvents =    do
         (\ e@(SelectSrcSpan mbSpan) -> selectMatchingErrors mbSpan >> return e)
     registerEvent stRef "SavedFile"
         (\ e@(SavedFile file) -> scheduleHLint (Right file) >> return e)
+    registerEvent stRef "PackageOpened"
+        (\ e@(PackageOpened pkg) -> onPackageOpened pkg >> return e)
+    registerEvent stRef "PackageClosed"
+        (\ e@(PackageClosed pkg) -> onPackageClosed pkg >> return e)
+    registerEvent stRef "WorkspaceOpened"
+        (\ e@(WorkspaceOpened ws) -> onWorkspaceOpened ws >> return e)
+    registerEvent stRef "WorkspaceClosed"
+        (\ e@(WorkspaceClosed ws) -> onWorkspaceClosed ws >> return e)
     return ()
 
 

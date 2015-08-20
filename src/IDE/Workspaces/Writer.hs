@@ -28,7 +28,7 @@ import IDE.Package
 import IDE.Utils.FileUtils(myCanonicalizePath)
 
 import Data.Maybe
-import Control.Monad (void, when)
+import Control.Monad (forM_, void, when)
 import Control.Monad.Trans (liftIO)
 import System.Time (getClockTime)
 import Text.PrinterParser

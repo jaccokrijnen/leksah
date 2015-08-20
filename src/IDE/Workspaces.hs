@@ -34,6 +34,9 @@ module IDE.Workspaces (
 
 ,   backgroundMake
 ,   makePackage
+
+,   onWorkspaceClosed
+,   onWorkspaceOpened
 ) where
 
 import IDE.Core.State
@@ -98,6 +101,7 @@ import Data.Monoid ((<>))
 import qualified Text.Printf as S (printf)
 import Text.Printf (PrintfType)
 import qualified Data.Text.IO as T (writeFile)
+import IDE.Pane.SourceBuffer
 
 printf :: PrintfType r => Text -> r
 printf = S.printf . T.unpack
@@ -206,13 +210,15 @@ workspaceOpenThis askForSession mbFilePath =
                                 otherwise   ->  return False
                     else return False
             if wantToLoadSession
-                then void (triggerEventIDE (LoadSession spath))
+                then -- This event triggers a call back to `workspaceThis` with False as its first argument
+                     void (triggerEventIDE (LoadSession spath))
                 else do
                     ideR <- ask
                     catchIDE (do
                         workspace <- readWorkspace filePath
                         Writer.setWorkspace (Just workspace {wsFile = filePath})
-                        VCSWS.onWorkspaceOpen workspace)
+                        void (triggerEventIDE (WorkspaceOpened workspace))
+                        )
                            (\ (e :: Exc.SomeException) -> reflectIDE
                                 (ideMessage Normal (T.pack $ printf (__ "Can't load workspace file %s\n%s") filePath (show e))) ideR)
 
@@ -225,9 +231,9 @@ workspaceClose = do
     case oldWorkspace of
         Nothing -> return ()
         Just ws -> do
-            VCSWS.onWorkspaceClose
-            let oldActivePackFile = wsActivePackFile ws
+            triggerEventIDE (WorkspaceClosed ws)
             triggerEventIDE (SaveSession (dropExtension (wsFile ws) ++ leksahSessionFileExtension))
+            let oldActivePackFile = wsActivePackFile ws
             addRecentlyUsedWorkspace (wsFile ws)
             Writer.setWorkspace Nothing
             when (isJust oldActivePackFile) $ do
@@ -277,6 +283,9 @@ constructAndOpenMainModules (Just idePackage) =
                     _ -> return ()
             Nothing     -> ideMessage Normal (__ "No package description")
 
+
+-- | Prompts the user for a cabal file, and tries to add the package
+-- to the workspace
 workspaceAddPackage :: WorkspaceAction
 workspaceAddPackage = do
     ws <- ask
@@ -289,6 +298,8 @@ workspaceAddPackage = do
             void (workspaceAddPackage' fp)
             lift $ void (triggerEventIDE UpdateWorkspaceInfo)
 
+
+-- | Try to add a package to the workspace
 workspaceAddPackage' :: FilePath -> WorkspaceM (Maybe IDEPackage)
 workspaceAddPackage' fp = do
     ws <- ask
@@ -296,13 +307,16 @@ workspaceAddPackage' fp = do
     mbPack <- lift $ idePackageFromPath logOutputDefault cfp
     case mbPack of
         Just pack -> do
-            unless (cfp `elem` map ipdCabalFile (wsPackages ws)) $ lift $
+            unless (cfp `elem` map ipdCabalFile (wsPackages ws)) $ lift $ do
+                triggerEventIDE (PackageOpened pack)
                 Writer.writeWorkspace $ ws {wsPackages =  pack : wsPackages ws,
                                      wsActivePackFile =  Just (ipdCabalFile pack),
                                      wsActiveExe = Nothing}
             return (Just pack)
         Nothing -> return Nothing
 
+
+-- | If there is an active package, perform the given `PackageAction` on it
 packageTryQuiet :: PackageAction -> IDEAction
 packageTryQuiet f = do
     maybePackage <- readIDE activePack
@@ -310,6 +324,9 @@ packageTryQuiet f = do
         Just p  -> workspaceTryQuiet $ runPackageM f p
         Nothing -> ideMessage Normal (__ "No active package")
 
+
+-- | Same as `packageTryQuiet`, but prompt the user when there is no active package
+--   or active workspace
 packageTry :: PackageAction -> IDEAction
 packageTry f = workspaceTry $ do
         maybePackage <- lift $ readIDE activePack
@@ -336,10 +353,12 @@ packageTry f = workspaceTry $ do
                         lift $ postAsyncIDE $ packageTryQuiet f
                     _  -> return ()
 
+-- | Remove a package from the workspace
 workspaceRemovePackage :: IDEPackage -> WorkspaceAction
 workspaceRemovePackage pack = do
     ws <- ask
-    when (pack `elem` wsPackages ws) $ lift $
+    when (pack `elem` wsPackages ws) $ lift $ do
+        triggerEventIDE (PackageClosed pack)
         Writer.writeWorkspace ws {wsPackages =  delete pack (wsPackages ws)}
     return ()
 
@@ -451,27 +470,30 @@ workspaceMake = do
     let steps = MoComposed (MoConfigure : build)
     makePackages settings (wsPackages ws) steps steps MoMetaInfo
 
--- | Runs ghci for all modified packages
+
+-- | Reloads the ghci sessions for all modified packages
 backgroundMake :: IDEAction
 backgroundMake = catchIDE (do
+    liftIO $ debugM "leksah" "backgroundMake"
     ideR        <- ask
     prefs       <- readIDE prefs
     mbPackage   <- readIDE activePack
     case mbPackage of
         Nothing         -> return ()
         Just package    -> do
-            modifiedPacks <- if saveAllBeforeBuild prefs
-                                then fileCheckAll belongsToPackages
-                                else return []
+            modifiedPacks <- fileCheckAll belongsToPackages
             let isModified = not (null modifiedPacks)
             when isModified $ do
                 let settings = defaultMakeSettings prefs
+                fileSaveAll belongsToWorkspace
                 workspaceTryQuiet $
                     makePackages settings modifiedPacks MoGhci (MoComposed []) moNoOp
     )
     (\(e :: Exc.SomeException) -> sysMessage Normal (T.pack $ show e))
 
-makePackage ::  PackageAction
+
+-- | Run a build chain for building the package
+makePackage :: PackageAction
 makePackage = do
     p <- ask
     liftIDE $ do
@@ -482,12 +504,22 @@ makePackage = do
             Nothing -> sysMessage Normal (__ "No workspace for build.")
             Just ws -> do
                 let steps = buildSteps (msRunUnitTests settings) False
---                if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
---                    then runWorkspace
---                            (makePackages settings [p] (MoComposed steps) (MoComposed []) moNoOp) ws
---                    else
                 runWorkspace
                     (makePackages settings [p]
                     (MoComposed steps)
                     (MoComposed (MoConfigure:steps))
                     MoMetaInfo) ws
+
+
+-- | Called when the `WorkspaceOpened` event triggers
+onWorkspaceOpened :: Workspace -> IDEAction
+onWorkspaceOpened ws = do
+    forM_ (wsPackages ws) (\pkg -> triggerEventIDE (PackageOpened pkg))
+    VCSWS.onWorkspaceOpen ws
+
+
+-- | Called when the `WorkspaceClosed` event triggers
+onWorkspaceClosed :: Workspace -> IDEAction
+onWorkspaceClosed ws = do
+    forM_ (wsPackages ws) (\pkg -> triggerEventIDE (PackageClosed pkg))
+    VCSWS.onWorkspaceClose
