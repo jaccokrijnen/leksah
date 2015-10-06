@@ -22,6 +22,7 @@
 
 module IDE.Core.Types (
     IDE(..)
+,   activeComponent
 ,   IDEState(..)
 ,   IDERef
 ,   IDEM
@@ -34,6 +35,8 @@ module IDE.Core.Types (
 
 ,   WorkspaceM
 ,   WorkspaceAction
+,   MonadWorkspace
+,   liftWorkspace
 ,   runWorkspace
 
 ,   PackageM
@@ -47,8 +50,12 @@ module IDE.Core.Types (
 ,   IDEPackage(..)
 ,   ipdPackageDir
 ,   ipdAllDirs
-,   ipdLib
 ,   ipdPackageName
+,   ipdHasLib
+,   PackageComponent(..)
+,   PackageComponentType(..)
+,   componentNameUnambiguous
+
 ,   Workspace(..)
 ,   wsAllPackages
 ,   VCSConf
@@ -131,7 +138,7 @@ import Data.Time (UTCTime(..))
 
 import qualified VCSWrapper.Common as VCS
 import qualified VCSGui.Common as VCSGUI
-import qualified Data.Map as Map (Map)
+import qualified Data.Map as Map
 import Data.Typeable (Typeable)
 import Foreign (Ptr)
 import Control.Monad.Reader.Class (MonadReader(..))
@@ -141,7 +148,8 @@ import Language.Haskell.HLint3 (Idea(..))
 import Data.Function (on)
 import Control.Concurrent.STM.TVar (TVar)
 import Data.Sequence (Seq)
-import Data.Maybe (maybeToList)
+import Data.Maybe (mapMaybe, maybeToList)
+import Data.Monoid ((<>))
 
 -- ---------------------------------------------------------------------
 -- IDE State
@@ -159,7 +167,6 @@ data IDE            =  IDE {
 ,   prefs           ::   Prefs                   -- ^ configuration preferences
 ,   workspace       ::   Maybe Workspace         -- ^ may be a workspace (set of packages)
 ,   activePack      ::   Maybe IDEPackage
-,   activeExe       ::   Maybe Text
 ,   bufferProjCache ::   Map FilePath [IDEPackage] -- ^ cache the associated packages for a file
 ,   allLogRefs      ::   Seq LogRef
 ,   currentEBC      ::   (Maybe LogRef, Maybe LogRef, Maybe LogRef)
@@ -187,6 +194,15 @@ data IDE            =  IDE {
 ,   autoCommand     ::   IDEAction
 ,   autoURI         ::   Maybe Text
 } --deriving Show
+
+-- | Returns the name of the active component if a package is active and it has an active component
+activeComponent :: IDE -> Maybe Text
+activeComponent ide = do
+    ws  <- workspace ide
+    pkg <- activePack ide
+    component <- Map.lookup (ipdCabalFile pkg) (wsActiveComponents ws)
+    return (componentName component)
+
 
 --
 -- | A mutable reference to the IDE state
@@ -252,6 +268,15 @@ type WorkspaceAction = WorkspaceM ()
 
 runWorkspace :: WorkspaceM a -> Workspace -> IDEM a
 runWorkspace = runReaderT
+
+class MonadIO m => MonadWorkspace m where
+    liftWorkspace :: WorkspaceM a -> m a
+
+instance MonadWorkspace WorkspaceM where
+    liftWorkspace = id
+
+instance MonadWorkspace PackageM where
+    liftWorkspace = lift
 
 -- ---------------------------------------------------------------------
 -- Monad for functions that need an active package
@@ -380,10 +405,7 @@ data IDEPackage     =   IDEPackage {
 ,   ipdCabalFile       ::   FilePath
 ,   ipdDepends         ::   [Dependency]
 ,   ipdModules         ::   Map ModuleName BuildInfo
-,   ipdHasLibs         ::   Bool
-,   ipdExes            ::   [Text]
-,   ipdTests           ::   [Text]
-,   ipdBenchmarks      ::   [Text]
+,   ipdComponents      ::   [PackageComponent]
 ,   ipdMain            ::   [(FilePath, BuildInfo, Bool)]
 ,   ipdExtraSrcs       ::   Set FilePath
 ,   ipdSrcDirs         ::   [FilePath] -- ^ Relative paths to the source directories
@@ -415,13 +437,47 @@ ipdPackageDir = dropFileName . ipdCabalFile
 ipdPackageName :: IDEPackage -> Text
 ipdPackageName = T.pack . (\(PackageName s) -> s) . pkgName . ipdPackageId
 
--- | Gets the library name if the package has a library component
-ipdLib :: IDEPackage -> Maybe Text
-ipdLib pkg = if ipdHasLibs pkg then Just (ipdPackageName pkg) else Nothing
 
 -- | All directory of the package and those of all its source dependencies
 ipdAllDirs :: IDEPackage -> [FilePath]
 ipdAllDirs p = ipdPackageDir p : (ipdSandboxSources p >>= ipdAllDirs)
+
+-- | Whether the package has a library component
+ipdHasLib :: IDEPackage -> Bool
+ipdHasLib pkg = any ((== ComponentLib) . componentType) (ipdComponents pkg)
+
+---- | Gets the library name if the package has a library component
+--ipdLib :: IDEPackage -> Maybe Text
+--ipdLib pkg = if ipdHasLibs pkg then Just (ipdPackageName pkg) else Nothing
+
+
+-- | A component of a cabal package
+data PackageComponent
+    = PackageComponent {
+        componentType :: PackageComponentType,
+        componentName :: Text
+    }
+    deriving (Eq, Show, Read)
+
+
+-- | The type of package component
+data PackageComponentType
+    = ComponentExe
+    | ComponentLib
+    | ComponentTest
+    | ComponentBench
+    deriving (Eq, Show, Read)
+
+-- | Returns the name of the component prefixed with "exe:", "lib:", "test:" or "bench:".
+-- this notation is used by cabal to distinguish between components with the same name.
+componentNameUnambiguous :: PackageComponent -> Text
+componentNameUnambiguous comp = typ <> componentName comp
+    where
+        typ = case componentType comp of
+            ComponentExe -> "exe:"
+            ComponentLib -> "lib:"
+            ComponentTest -> "test:"
+            ComponentBench -> "bench:"
 
 -- ---------------------------------------------------------------------
 -- Workspace
@@ -434,7 +490,7 @@ data Workspace = Workspace {
 ,   wsPackages      ::   [IDEPackage]
 ,   wsPackagesFiles ::   [FilePath]
 ,   wsActivePackFile::   Maybe FilePath
-,   wsActiveExe     ::   Maybe Text
+,   wsActiveComponents :: Map FilePath PackageComponent -- ^ (Filepath to cabal file, active package component)
 ,   wsNobuildPack   ::   [IDEPackage]
 ,   packageVcsConf  ::   Map FilePath VCSConf -- ^ (FilePath to package, Version-Control-System Configuration)
 } deriving Show

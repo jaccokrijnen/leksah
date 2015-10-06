@@ -41,6 +41,8 @@ module IDE.Package (
 ,   packageSdist
 ,   packageOpenDoc
 
+,   packageActiveComponent
+
 ,   getPackageDescriptionAndPath
 ,   getEmptyModuleTemplate
 ,   getModuleTemplate
@@ -77,7 +79,7 @@ import Distribution.PackageDescription.Configuration
 import Distribution.Verbosity
 import System.FilePath
 import Control.Concurrent
-import System.Directory (setCurrentDirectory, doesFileExist, getDirectoryContents, doesDirectoryExist)
+import System.Directory (setCurrentDirectory, doesFileExist, getDirectoryContents, doesDirectoryExist, getCurrentDirectory)
 import Prelude hiding (catch)
 import Data.Maybe
        (listToMaybe, fromMaybe, isNothing, isJust, fromJust, catMaybes)
@@ -96,7 +98,7 @@ import Distribution.ModuleName (ModuleName(..))
 import Data.List (isInfixOf, nub, foldl', delete, find)
 import IDE.Utils.Tool (ToolOutput(..), runTool, newGhci, ToolState(..), toolline, ProcessHandle, executeGhciCommand)
 import qualified Data.Set as  Set (fromList)
-import qualified Data.Map as  Map (empty, fromList)
+import qualified Data.Map as  Map (empty, fromList, lookup)
 import System.Exit (ExitCode(..))
 import Control.Applicative ((<$>), (<*>))
 import qualified Data.Conduit as C (Sink, ZipSink(..), getZipSink)
@@ -123,6 +125,7 @@ import Data.Monoid ((<>))
 import qualified Data.Text.IO as T (readFile)
 import qualified Text.Printf as S (printf)
 import Text.Printf (PrintfType)
+import IDE.Core.Types (IDEPackage(..))
 
 printf :: PrintfType r => Text -> r
 printf = S.printf . T.unpack
@@ -141,11 +144,11 @@ myExeModules pd = concatMap (moduleInfo buildInfo exeModules) (executables pd)
 myTestModules pd = concatMap (moduleInfo testBuildInfo (otherModules . testBuildInfo)) (testSuites pd)
 myBenchmarkModules pd = concatMap (moduleInfo benchmarkBuildInfo (otherModules . benchmarkBuildInfo)) (benchmarks pd)
 
-activatePackage :: Maybe FilePath -> Maybe IDEPackage -> Maybe Text -> IDEM ()
-activatePackage mbPath mbPack mbExe = do
+activatePackage :: Maybe FilePath -> Maybe IDEPackage -> IDEM ()
+activatePackage mbPath mbPack = do
     liftIO $ debugM "leksah" "activatePackage"
     oldActivePack <- readIDE activePack
-    modifyIDE_ (\ide -> ide{activePack = mbPack, activeExe = mbExe})
+    modifyIDE_ (\ide -> ide {activePack = mbPack})
     case mbPath of
         Just p -> liftIO $ setCurrentDirectory (dropFileName p)
         Nothing -> return ()
@@ -164,7 +167,7 @@ activatePackage mbPath mbPack mbExe = do
     return ()
 
 deactivatePackage :: IDEAction
-deactivatePackage = activatePackage Nothing Nothing Nothing
+deactivatePackage = activatePackage Nothing Nothing
 
 interruptSaveAndRun :: MonadIDE m => IDEAction -> m ()
 interruptSaveAndRun action = do
@@ -411,8 +414,8 @@ packageRun' removeGhcjsFlagIfPresent package =
             maybeDebug   <- readIDE debugState
             pd <- liftIO $ liftM flattenPackageDescription
                              (readPackageDescription normal (ipdCabalFile package))
-            mbExe <- readIDE activeExe
-            let exe = take 1 . filter (isActiveExe mbExe) $ executables pd
+            mbComponent <- readIDE activeComponent
+            let exe = take 1 . filter (isActiveExe mbComponent) $ executables pd
             let defaultLogName = T.pack . display . pkgName $ ipdPackageId package
                 logName = fromMaybe defaultLogName . listToMaybe $ map (T.pack . exeName) exe
             (logLaunch,logName) <- buildLogLaunchByName logName
@@ -474,7 +477,7 @@ packageRunJavaScript' addFlagIfMissing package =
                 maybeDebug   <- readIDE debugState
                 pd <- liftIO $ liftM flattenPackageDescription
                                  (readPackageDescription normal (ipdCabalFile package))
-                mbExe <- readIDE activeExe
+                mbExe <- readIDE activeComponent
                 let exe = take 1 . filter (isActiveExe mbExe) $ executables pd
                 let defaultLogName = T.pack . display . pkgName $ ipdPackageId package
                     logName = fromMaybe defaultLogName . listToMaybe $ map (T.pack . exeName) exe
@@ -507,7 +510,7 @@ packageRegister = do
 
 packageRegister' :: IDEPackage -> (Bool -> IDEAction) -> IDEAction
 packageRegister' package continuation =
-    if ipdHasLibs package
+    if ipdHasLib package
         then do
           logLaunch <- getDefaultLogLaunch
           showDefaultLogLaunch'
@@ -586,6 +589,13 @@ packageOpenDoc = do
 #endif
       `catchIDE`
         (\(e :: SomeException) -> print e)
+
+-- | Gets the active component of the active package
+packageActiveComponent :: PackageM (Maybe PackageComponent)
+packageActiveComponent = do
+    pkg <- ask
+    map <- readWorkspace wsActiveComponents
+    return $ Map.lookup (ipdCabalFile pkg) map
 
 
 runPackage ::  (ProcessHandle -> IDEAction)
@@ -780,6 +790,7 @@ interactiveFlags prefs =
 debugStart :: PackageAction
 debugStart = do
     package   <- ask
+    mbComponent <- fmap componentNameUnambiguous <$> packageActiveComponent
     liftIDE $ catchIDE (do
         ideRef     <- ask
         prefs'     <- readIDE prefs
@@ -787,8 +798,7 @@ debugStart = do
         case maybeDebug of
             Nothing -> do
                 let dir = ipdPackageDir package
-                mbExe <- readIDE activeExe
-                ghci <- reifyIDE $ \ideR -> newGhci dir mbExe (interactiveFlags prefs')
+                ghci <- reifyIDE $ \ideR -> newGhci dir mbComponent (interactiveFlags prefs')
                     $ reflectIDEI (void (logOutputForBuild package True False)) ideR
                 modifyIDE_ (\ide -> ide {debugState = Just (package, ghci)})
                 triggerEventIDE (Sensitivity [(SensitivityInterpreting, True)])
@@ -900,16 +910,17 @@ idePackageFromPath' ipdCabalFile = do
                 ipdSrcDirs          = case nub $ concatMap hsSourceDirs (allBuildInfo' packageD) of
                                             [] -> [".","src"]
                                             l -> l
-                ipdExes             = [ T.pack $ exeName e | e <- executables packageD
+                ipdComponents       = libs ++ exes ++ tests ++ bench
+                libs                = [PackageComponent ComponentLib . T.pack . unPackageName . pkgName $ ipdPackageId | hasLibs packageD]
+                exes                = [PackageComponent ComponentExe . T.pack $ exeName e | e <- executables packageD
                                           , buildable (buildInfo e) ]
-                ipdExtensions       = nub $ concatMap oldExtensions (allBuildInfo' packageD)
-                ipdTests            = [ T.pack $ testName t | t <- testSuites packageD
+                tests               = [PackageComponent ComponentTest . T.pack $ testName t | t <- testSuites packageD
                                           , buildable (testBuildInfo t) ]
-                ipdBenchmarks       = [ T.pack $ benchmarkName b | b <- benchmarks packageD
+                bench               = [PackageComponent ComponentBench . T.pack $ benchmarkName b | b <- benchmarks packageD
                                           , buildable (benchmarkBuildInfo b) ]
+                ipdExtensions       = nub $ concatMap oldExtensions (allBuildInfo' packageD)
                 ipdPackageId        = package packageD
                 ipdDepends          = buildDepends packageD
-                ipdHasLibs          = hasLibs packageD
                 ipdConfigFlags      = ["--enable-tests"]
                 ipdBuildFlags       = []
                 ipdTestFlags        = []
@@ -920,6 +931,7 @@ idePackageFromPath' ipdCabalFile = do
                 ipdUnregisterFlags  = []
                 ipdSdistFlags       = []
                 ipdSandboxSources   = []
+                ipdActiveComponent  = listToMaybe ipdComponents
                 packp               = IDEPackage {..}
                 pfile               = dropExtension ipdCabalFile
             pack <- do

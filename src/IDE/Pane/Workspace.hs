@@ -57,9 +57,6 @@ import Control.Monad (forM, void, when)
 import Data.Foldable (forM_)
 import Data.Typeable (Typeable)
 import IDE.Core.State
-       (catchIDE, window, getIDE, MessageLevel(..), ipdPackageId,
-        wsPackages, workspace, readIDE, IDEAction, ideMessage, reflectIDE,
-        reifyIDE, IDEM, IDEPackage, ipdSandboxSources)
 import IDE.Pane.SourceBuffer (fileNew, goToSourceDefinition')
 import IDE.Sandbox
 import Control.Applicative ((<$>))
@@ -88,10 +85,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
        (isPrefixOf, words, isSuffixOf, unpack, pack)
 import Data.Monoid ((<>))
-import IDE.Core.Types
-       (ipdLib, WorkspaceAction, Workspace(..), wsAllPackages, WorkspaceM,
-        runPackage, runWorkspace, PackageAction, PackageM, IDEPackage(..),
-        IDE(..), Prefs(..), MonadIDE(..), ipdPackageDir)
 import System.Glib.Properties (newAttrFromMaybeStringProperty)
 import System.FilePath
        (addTrailingPathSeparator, takeDirectory, takeExtension,
@@ -100,7 +93,7 @@ import Control.Monad.Reader.Class (MonadReader(..))
 import IDE.Workspaces
        (makePackage, workspaceAddPackage', workspaceRemovePackage,
         workspaceActivatePackage, workspaceTry, workspaceTryQuiet,
-        packageTry)
+        packageTry, workspaceActivateComponent)
 import Data.List
        (isSuffixOf, find, stripPrefix, isPrefixOf, sortBy, sort)
 import Data.Ord (comparing)
@@ -116,7 +109,7 @@ import Graphics.UI.Gtk.ModelView.CellRenderer
        (CellRendererMode(..), cellMode)
 import IDE.Pane.PackageEditor (packageEditText)
 import IDE.Utils.GtkBindings (treeViewSetActiveOnSingleClick)
-import IDE.Package (packageTest, packageRun, packageClean)
+import IDE.Package
 import Control.Monad.Trans.Class (MonadTrans(..))
 
 
@@ -129,7 +122,7 @@ data WorkspaceRecord =
   | AddSourcesRecord
   | AddSourceRecord IDEPackage
   | ComponentsRecord
-  | ComponentRecord Text
+  | ComponentRecord PackageComponent
   deriving (Eq)
 
 instance Ord WorkspaceRecord where
@@ -140,45 +133,40 @@ instance Ord WorkspaceRecord where
     compare (DirRecord p1 _) (DirRecord p2 _) = comparing (map toLower) p1 p2
     compare (PackageRecord p1) (PackageRecord p2) = comparing (map toLower . ipdPackageDir) p1 p2
     compare (AddSourceRecord p1) (AddSourceRecord p2) = comparing (map toLower . ipdPackageDir) p1 p2
-    compare (ComponentRecord t1) (ComponentRecord t2) = comparing (map toLower . T.unpack) t1 t2
+    compare (ComponentRecord t1) (ComponentRecord t2) =
+        comparing (map toLower . T.unpack . componentNameUnambiguous) t1 t2
     compare _ _ = LT
 
 
--- | The markup to show for a record
+-- | The markup to show for a record that is part of the given package
 toMarkup :: WorkspaceRecord
          -> IDEPackage
-         -> IDEM Text
+         -> WorkspaceM Text
 toMarkup record pkg = do
-    mbActivePackage   <- readIDE activePack
-    mbActiveComponent <- readIDE activeExe
-
+    mbActivePackage  <- readIDE activePack
+    mbActiveComponent <- runPackage packageActiveComponent pkg
     return . size $ case record of
-     (PackageRecord p) ->
-        let active = Just pkg == mbActivePackage
-            pkgText = (if active then bold else id)
-                          (packageIdentifierToString (ipdPackageId p))
-            mbLib   = ipdLib p
-            componentText = if active
-                                then maybe (if isJust mbLib then "(library)" else "")
-                                           (\comp -> "(" <> comp <> ")") mbActiveComponent
-                                else ""
-            pkgDir = gray . T.pack $ ipdPackageDir p
-        in (pkgText <> " " <> componentText <> " " <> pkgDir)
-     (FileRecord f) -> T.pack $ takeFileName f
-     (DirRecord f _) | ipdPackageDir pkg == f -> "Files"
-                     | otherwise -> T.pack $ last (splitDirectories f)
-     AddSourcesRecord -> "Source Dependencies"
-     (AddSourceRecord p) -> do
-        let pkgText = packageIdentifierToString (ipdPackageId p)
-            dirText = gray (T.pack (ipdPackageDir p))
-        pkgText <> " " <> dirText
-     ComponentsRecord -> "Components"
-     (ComponentRecord comp) -> do
-        let active = Just pkg == mbActivePackage &&
-                         (mbActiveComponent == Nothing && comp == "library"
-                             ||
-                          Just comp == mbActiveComponent)
-        (if active then bold else id) comp
+        (PackageRecord p) ->
+            let active = Just pkg == mbActivePackage
+                bracketed str = "(" <> str <> ")"
+                pkgText = (if active then bold else id)
+                              (packageIdentifierToString (ipdPackageId p))
+                --componentText = maybe " " (bracketed . componentNameUnambiguous) mbActiveComponent
+                componentText = maybe " " (bracketed . componentNameUnambiguous) mbActiveComponent
+                pkgDir = gray . T.pack $ ipdPackageDir p
+            in (pkgText <> " " <> componentText <> " " <> pkgDir)
+        (FileRecord f) -> T.pack $ takeFileName f
+        (DirRecord f _) | ipdPackageDir pkg == f -> "Files"
+                        | otherwise -> T.pack $ last (splitDirectories f)
+        AddSourcesRecord -> "Source Dependencies"
+        (AddSourceRecord p) ->
+            let pkgText = packageIdentifierToString (ipdPackageId p)
+                dirText = gray (T.pack (ipdPackageDir p))
+            in  pkgText <> " " <> dirText
+        ComponentsRecord -> "Components"
+        (ComponentRecord comp) ->
+            let isActive = mbActiveComponent  == Just comp
+            in (if isActive then bold else id) (componentNameUnambiguous comp)
     where
         bold str = "<b>" <> str <> "</b>"
         italic str = "<i>" <> str <> "</i>"
@@ -237,7 +225,7 @@ canExpand record pkg = case record of
     (AddSourceRecord _) -> return True
     _                   -> return False
 
-    where components = maybeToList (ipdLib pkg) ++ ipdExes pkg ++ ipdTests pkg ++ ipdBenchmarks pkg
+    where components = ipdComponents pkg
 
 -- * The Workspace pane
 
@@ -293,9 +281,11 @@ instance RecoverablePane WorkspacePane WorkspaceState IDEM where
             record <- treeModelGetRow recordStore iter
             mbPkg  <- flip reflectIDE ideR $ iterToPackage recordStore iter
             forM_ mbPkg $ \pkg -> do
-                -- The cellrenderer is stateful, so it knows which cell this markup will be for (the cell at iter)
-                markup <- flip reflectIDE ideR $ toMarkup record pkg
-                forM_ mbPkg $ \pkg -> set renderer1 [ cellTextMarkup := Just markup]
+                flip reflectIDE ideR $
+                    workspaceTryQuiet $ do
+                        markup <- toMarkup record pkg
+                        -- The cellrenderer is stateful, so it knows which cell this markup will be for (the cell at iter)
+                        forM_ mbPkg $ \pkg -> liftIO $ set renderer1 [ cellTextMarkup := Just markup]
 
         -- treeViewSetActiveOnSingleClick treeView True
         treeViewSetHeadersVisible treeView False
@@ -329,8 +319,8 @@ instance RecoverablePane WorkspacePane WorkspaceState IDEM where
                 case record of
                         FileRecord f  -> void . flip reflectIDE ideR $
                                              goToSourceDefinition' f (Location "" 1 0 1 0)
-                        ComponentRecord name -> flip reflectIDE ideR $ workspaceTryQuiet $
-                                                          workspaceActivatePackage pkg (Just name)
+                        ComponentRecord comp -> flip reflectIDE ideR $ workspaceTryQuiet $
+                                                    workspaceActivateComponent (ipdCabalFile pkg) (Just comp)
                         _ -> when expandable $ do
                                  void $ treeViewToggleRow treeView path
 
@@ -467,17 +457,9 @@ dirRecords dir = do
 -- | Get the components for a specific package
 componentsRecords :: PackageM [WorkspaceRecord]
 componentsRecords = do
-    package         <- ask
-    mbActivePackage <- readIDE activePack
-    activeComponent <- readIDE activeExe
+    package <- ask
+    return $ sort $ map ComponentRecord (ipdComponents package)
 
-    return $ sort $ map (\comp -> ComponentRecord comp) (components package)
-
-    where
-        components package = maybeToList (ipdLib package)
-                          ++ ipdExes package
-                          ++ ipdTests package
-                          ++ ipdBenchmarks package
 
 
 -- | Recursively sets the children of the given 'TreePath' to the provided tree of 'WorkspaceRecord's. If a record
@@ -601,7 +583,7 @@ contextMenuItems record path store = do
 
         PackageRecord p -> do
 
-            let onSetActive = workspaceTryQuiet $ workspaceActivatePackage p Nothing
+            let onSetActive = workspaceTryQuiet $ workspaceActivatePackage p
                 onAddModule = workspaceTryQuiet $ runPackage (addModule []) p
                 onOpenCabalFile = workspaceTryQuiet $ runPackage packageEditText p
                 onRemoveFromWs = workspaceTryQuiet $ do
@@ -626,7 +608,7 @@ contextMenuItems record path store = do
         ComponentRecord comp -> do
             Just pkg <- treePathToPackage store path
             let onSetActive = workspaceTryQuiet $
-                                  workspaceActivatePackage pkg (Just comp)
+                                  workspaceActivateComponent (ipdCabalFile pkg) (Just comp)
             return [[ ("Activate component", onSetActive) ]]
 
         AddSourcesRecord -> do

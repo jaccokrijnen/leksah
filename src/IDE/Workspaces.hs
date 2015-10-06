@@ -23,6 +23,7 @@ module IDE.Workspaces (
 ,   workspaceClean
 ,   workspaceMake
 ,   workspaceActivatePackage
+,   workspaceActivateComponent
 ,   workspaceAddPackage
 ,   workspaceAddPackage'
 ,   workspaceRemovePackage
@@ -39,7 +40,7 @@ module IDE.Workspaces (
 ,   fileOpen'
 ) where
 
-import IDE.Core.State
+import IDE.Core.State hiding (readWorkspace)
 import Graphics.UI.Editor.Parameters
     (Parameter(..), (<<<-), paraName, emptyParams)
 import Control.Monad (filterM, void, unless, when, liftM)
@@ -76,7 +77,7 @@ import Graphics.UI.Gtk.Windows.MessageDialog
     (ButtonsType(..), MessageType(..))
 import Graphics.UI.Gtk.Windows.Dialog (ResponseId(..))
 import qualified Control.Exception as Exc (SomeException(..), throw, Exception)
-import qualified Data.Map as  Map (empty)
+import qualified Data.Map as  Map (empty, insert, delete)
 import IDE.Pane.SourceBuffer
        (belongsToWorkspace, IDEBuffer(..), maybeActiveBuf, fileOpenThis,
         fileCheckAll, dependentPackages')
@@ -314,7 +315,7 @@ workspaceAddPackage' fp = do
             unless (cfp `elem` map ipdCabalFile (wsPackages ws)) $ lift $
                 Writer.writeWorkspace $ ws {wsPackages =  pack : wsPackages ws,
                                      wsActivePackFile =  Just (ipdCabalFile pack),
-                                     wsActiveExe = Nothing}
+                                     wsActiveComponents = Map.empty}
             return (Just pack)
         Nothing -> return Nothing
 
@@ -358,18 +359,26 @@ workspaceRemovePackage pack = do
         Writer.writeWorkspace ws {wsPackages =  delete pack (wsPackages ws)}
     return ()
 
-workspaceActivatePackage :: IDEPackage -> Maybe Text -> WorkspaceAction
-workspaceActivatePackage pack exe = do
+-- | Activates the given `IDEPackage` in the workspace
+workspaceActivatePackage :: IDEPackage -> WorkspaceAction
+workspaceActivatePackage pack = do
     ws <- ask
     let activePath = takeDirectory $ ipdCabalFile pack
-    lift $ activatePackage (Just activePath) (Just pack) exe
+    lift $ activatePackage (Just activePath) (Just pack)
     when (pack `elem` wsPackages ws) $ lift $ do
-        Writer.writeWorkspace ws {wsActivePackFile =  Just (ipdCabalFile pack)
-                                 ,wsActiveExe = exe}
+        Writer.writeWorkspace ws { wsActivePackFile =  Just (ipdCabalFile pack)}
         return ()
     return ()
 
-
+-- | Activates the given `PackageComponent` for the package at the given `FilePath`
+workspaceActivateComponent :: FilePath -> Maybe PackageComponent -> WorkspaceAction
+workspaceActivateComponent pkg mbComp = do
+    ws <- ask
+    let old = wsActiveComponents ws
+    let new = case mbComp of
+                Nothing -> Map.delete pkg old
+                Just comp -> Map.insert pkg comp old
+    lift $ Writer.writeWorkspace ws{wsActiveComponents = new}
 
 readWorkspace :: FilePath -> IDEM Workspace
 readWorkspace fp = do
@@ -408,7 +417,7 @@ emptyWorkspace =  Workspace {
 ,   wsPackages      =   []
 ,   wsPackagesFiles =   []
 ,   wsActivePackFile =   Nothing
-,   wsActiveExe     =   Nothing
+,   wsActiveComponents = Map.empty
 ,   wsNobuildPack   =   []
 ,   packageVcsConf  =   Map.empty
 }
@@ -475,15 +484,16 @@ backgroundMake = catchIDE (do
     modifiedPacks <- if saveAllBeforeBuild prefs
                         then fileCheckAll dependentPackages'
                         else return []
-    let isModified = not (null modifiedPacks)
-    when isModified $ do
-        let settings = defaultMakeSettings prefs
-        steps <- buildSteps $ msRunUnitTests settings
-        workspaceTryQuiet $ if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
-            then makePackages settings modifiedPacks (MoComposed steps) (MoComposed []) moNoOp
-            else makePackages settings modifiedPacks (MoComposed steps)
-                                (MoComposed (MoConfigure:steps)) MoMetaInfo
-    )
+    mbActive <- readIDE activePack
+    forM_ mbActive $ \active -> do
+        when (active `elem` modifiedPacks) $ do
+            let settings = defaultMakeSettings prefs
+            steps <- buildSteps $ msRunUnitTests settings
+            workspaceTryQuiet $ if debug || msSingleBuildWithoutLinking settings && not (msMakeMode settings)
+                then makePackages settings [active] (MoComposed steps) (MoComposed []) moNoOp
+                else makePackages settings [active] (MoComposed steps)
+                                    (MoComposed (MoConfigure:steps)) MoMetaInfo
+        )
     (\(e :: Exc.SomeException) -> sysMessage Normal (T.pack $ show e))
 
 makePackage ::  PackageAction

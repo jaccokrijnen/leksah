@@ -373,7 +373,6 @@ startMainWindow yiControl sessionFP mbWorkspaceFP sourceFPs startupPrefs isFirst
           ,   prefs             =   startupPrefs
           ,   workspace         =   Nothing
           ,   activePack        =   Nothing
-          ,   activeExe         =   Nothing
           ,   bufferProjCache   =   Map.empty
           ,   allLogRefs        =   Seq.empty
           ,   currentHist       =   0

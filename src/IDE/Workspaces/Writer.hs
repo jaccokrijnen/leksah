@@ -70,28 +70,24 @@ getPackage fp packages =
 -- This needs to be incremented, when the workspace format changes
 --
 workspaceVersion :: Int
-workspaceVersion = 2
+workspaceVersion = 4
 
 setWorkspace :: Maybe Workspace -> IDEAction
 setWorkspace mbWs = do
     liftIO $ debugM "leksah" "setWorkspace"
     mbOldWs <- readIDE workspace
     modifyIDE_ (\ide -> ide{workspace = mbWs})
-    let packFileAndExe =  case mbWs of
-                            Nothing -> Nothing
-                            Just ws -> Just (wsActivePackFile ws, wsActiveExe ws)
-    let oldPackFileAndExe = case mbOldWs of
-                            Nothing -> Nothing
-                            Just ws -> Just (wsActivePackFile ws, wsActiveExe ws)
     let mbPackages =  case mbWs of
                         Nothing -> Nothing
                         Just ws -> Just (wsPackages ws)
-    when (packFileAndExe /= oldPackFileAndExe) $
-            case packFileAndExe of
-                (Just (Just p, mbExe))  -> void (activatePackage (Just p) (getPackage p (fromJust mbPackages)) mbExe)
+    let oldActive = mbOldWs >>= wsActivePackFile
+    let newActive = mbWs >>= wsActivePackFile
+    when (oldActive /= newActive) $
+            case newActive of
+                Just path -> activatePackage (Just path) (getPackage path (fromJust mbPackages))
                 _ -> deactivatePackage
     mbPack <- readIDE activePack
-    mbExe  <- readIDE activeExe
+    mbComponent  <- readIDE activeComponent
     let wsStr = case mbWs of
                     Nothing -> ""
                     Just ws -> wsName ws
@@ -99,9 +95,9 @@ setWorkspace mbWs = do
                  <> (case mbPack of
                             Nothing  -> ""
                             Just p   -> packageIdentifierToString (ipdPackageId p))
-                 <> (case mbExe of
+                 <> (case mbComponent of
                             Nothing  -> ""
-                            Just exe -> " " <> exe)
+                            Just comp -> " " <> comp)
     triggerEventIDE (StatusbarChanged [CompartmentPackage txt])
     triggerEventIDE (WorkspaceChanged True True)
     triggerEventIDE UpdateWorkspaceInfo
@@ -152,11 +148,11 @@ workspaceDescr = [
             wsActivePackFile
             (\fp a -> a{wsActivePackFile = fp})
     ,   mkFieldS
-            (paraName <<<- ParaName "Maybe name of an active executable" $ emptyParams)
+            (paraName <<<- ParaName "Maps a package to its active component" $ emptyParams)
             (PP.text . show)
             readParser
-            wsActiveExe
-            (\fp a -> a{wsActiveExe = fp})
+            wsActiveComponents
+            (\fp a -> a{wsActiveComponents = fp})
     ,   mkFieldS
             (paraName <<<- ParaName "Version Control System configurations for packages" $ emptyParams)
             (PP.text . show)

@@ -62,9 +62,6 @@ import qualified Data.Text as T
        (isPrefixOf, words, isSuffixOf, unpack, pack)
 import Data.Monoid ((<>))
 import IDE.Core.Types
-       (ipdLib, WorkspaceAction, Workspace(..), wsAllPackages, WorkspaceM,
-        runPackage, runWorkspace, PackageAction, PackageM, IDEPackage(..),
-        IDE(..), Prefs(..), MonadIDE(..), ipdPackageDir)
 import System.Glib.Properties (newAttrFromMaybeStringProperty)
 import System.FilePath
        (addTrailingPathSeparator, takeDirectory, takeExtension,

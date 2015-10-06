@@ -45,6 +45,8 @@ module IDE.Core.State (
 ,   withIDE
 ,   getIDE
 ,   throwIDE
+,   readWorkspace
+
 
 ,   reifyIDE
 ,   reflectIDE
@@ -391,6 +393,9 @@ withoutRecordingDo act = do
         (b,l,n) <- readIDE guiHistory
         modifyIDE_ (\ide -> ide{guiHistory = (False,l,n)})
         else act
+
+readWorkspace :: MonadWorkspace m => (Workspace -> a) -> m a
+readWorkspace f = f <$> liftWorkspace ask
 
 -- ---------------------------------------------------------------------
 -- Activating and deactivating Panes.

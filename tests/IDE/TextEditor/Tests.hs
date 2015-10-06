@@ -96,7 +96,6 @@ testIDE f = do
               ,   prefs             =   defaultPrefs
               ,   workspace         =   Nothing
               ,   activePack        =   Nothing
-              ,   activeExe         =   Nothing
               ,   bufferProjCache   =   Map.empty
               ,   allLogRefs        =   empty
               ,   currentHist       =   0
