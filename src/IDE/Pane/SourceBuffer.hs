@@ -147,8 +147,6 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import System.Log.Logger (errorM, warningM, debugM)
 import Data.Text (Text)
 import qualified Data.Text as T
-       (length, findIndex, replicate, lines,
-        dropWhileEnd, unlines, strip, null, pack, unpack)
 import Data.Monoid ((<>))
 import qualified Data.Text.IO as T (writeFile, readFile)
 import Data.Time (UTCTime(..))
@@ -161,6 +159,7 @@ import Language.Haskell.HLint3 (Idea(..))
 import qualified Data.Sequence as Seq
 import Data.Sequence (ViewR(..), (|>))
 import Data.Time.Clock (addUTCTime, diffUTCTime)
+import IDE.ExternalTools.GhcMod
 
 --time :: MonadIO m => String -> m a -> m a
 --time name action = do
@@ -244,6 +243,26 @@ startComplete = do
     case mbBuf of
         Nothing     -> return ()
         Just (IDEBuffer {sourceView=v}) -> complete v True
+
+showType :: IDEAction
+showType = do
+    mbIdeBuf <- maybeActiveBuf
+    forM_ mbIdeBuf $ \IDEBuffer {..} -> do
+        buf <- getBuffer sourceView
+        iter <- getInsertIter buf
+
+        line <- getLine iter
+        col  <- getOffset iter
+        mbGhcMod <- fmap (fmap ghcMod) (readIDE activePackageState)
+
+        forM_ fileName $ \file -> do
+            forM_ mbGhcMod $ \ghcMod -> do
+                let command = T.pack $ unwords ["type", file, show line, show col]
+                reifyIDE $ \ide -> runGhcModCommand ghcMod command (parseIters ide)
+
+    where
+        parseIters ide = mapM_ (changeStatusBar [])
+        parseIter = undefined
 
 -- selectSourceBuf :: FilePath -> IDEM (Maybe IDEBuffer)
 selectSourceBuf fp = do

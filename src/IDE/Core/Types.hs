@@ -49,6 +49,9 @@ module IDE.Core.Types (
 ,   ipdAllDirs
 ,   ipdLib
 ,   ipdPackageName
+
+,   ActivePackageState (..)
+
 ,   Workspace(..)
 ,   wsAllPackages
 ,   VCSConf
@@ -142,6 +145,7 @@ import Data.Function (on)
 import Control.Concurrent.STM.TVar (TVar)
 import Data.Sequence (Seq)
 import Data.Maybe (maybeToList)
+import IDE.ExternalTools.GhcMod
 
 -- ---------------------------------------------------------------------
 -- IDE State
@@ -186,6 +190,7 @@ data IDE            =  IDE {
 ,   logLaunches     ::   Map.Map Text LogLaunchData
 ,   autoCommand     ::   IDEAction
 ,   autoURI         ::   Maybe Text
+,   activePackageState ::   Maybe ActivePackageState
 } --deriving Show
 
 --
@@ -304,6 +309,7 @@ data IDEEvent  =
     |   WorkspaceChanged Bool Bool -- ^ showPane updateFileCache
     |   SelectSrcSpan (Maybe SrcSpan)
     |   SavedFile FilePath
+    |   ActivePackageChanged (Maybe FilePath) (Maybe FilePath)
 
 instance Event IDEEvent Text where
     getSelector (InfoChanged _)         =   "InfoChanged"
@@ -331,6 +337,7 @@ instance Event IDEEvent Text where
     getSelector (WorkspaceChanged _ _)  =   "WorkspaceChanged"
     getSelector (SelectSrcSpan _)       =   "SelectSrcSpan"
     getSelector (SavedFile _)           =   "SavedFile"
+    getSelector (ActivePackageChanged _ _) = "ActivePackageChanged"
 
 instance EventSource IDERef IDEEvent IDEM Text where
     canTriggerEvent _ "InfoChanged"         = True
@@ -360,6 +367,7 @@ instance EventSource IDERef IDEEvent IDEM Text where
     canTriggerEvent _ "WorkspaceChanged"    = True
     canTriggerEvent _ "SelectSrcSpan"       = True
     canTriggerEvent _ "SavedFile"           = True
+    canTriggerEvent _ "ActivePackageChanged" = True
     canTriggerEvent _ _                   = False
     getHandlers ideRef = do
         ide <- liftIO $ readIORef ideRef
@@ -422,6 +430,13 @@ ipdLib pkg = if ipdHasLibs pkg then Just (ipdPackageName pkg) else Nothing
 -- | All directory of the package and those of all its source dependencies
 ipdAllDirs :: IDEPackage -> [FilePath]
 ipdAllDirs p = ipdPackageDir p : (ipdSandboxSources p >>= ipdAllDirs)
+
+
+-- * State for the currently active package
+data ActivePackageState = ActivePackageState {
+    ghcMod :: GhcMod
+}
+
 
 -- ---------------------------------------------------------------------
 -- Workspace

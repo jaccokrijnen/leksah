@@ -123,6 +123,7 @@ import qualified Data.Text.IO as T (readFile)
 import Data.Monoid (Monoid(..), (<>))
 import qualified Text.Printf as S (printf)
 import Text.Printf (PrintfType)
+import IDE.ExternalTools.GhcMod
 
 printf :: PrintfType r => Text -> r
 printf = S.printf . T.unpack
@@ -968,6 +969,15 @@ registerLeksahEvents =    do
         (\ e@(SelectSrcSpan mbSpan) -> selectMatchingErrors mbSpan >> return e)
     registerEvent stRef "SavedFile"
         (\ e@(SavedFile file) -> scheduleHLint (Right file) >> return e)
+    registerEvent stRef "ActivePackageChanged"
+        (\e@(ActivePackageChanged old new) -> do
+            mbActivePkg <- readIDE activePackageState
+            let mbGhcMod = fmap ghcMod mbActivePkg
+            forM_ mbGhcMod (liftIO . killGhcMod)
+            when (isJust new) $ do
+                newGhcMod <- liftIO $ startGhcMod new
+                modifyIDE_ (\ide -> ide {activePackageState = Just (ActivePackageState newGhcMod)})
+            return e)
     return ()
 
 

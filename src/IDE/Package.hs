@@ -161,6 +161,7 @@ activatePackage mbPath mbPack mbExe = do
                     (Just path, _) -> wsStr <> " > " <> T.pack (takeFileName path)
                     _ -> wsStr <> ":"
     triggerEventIDE (StatusbarChanged [CompartmentPackage txt])
+    triggerEventIDE (ActivePackageChanged (ipdPackageDir <$> oldActivePack) (ipdPackageDir <$> mbPack))
     return ()
 
 deactivatePackage :: IDEAction
