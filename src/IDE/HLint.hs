@@ -69,7 +69,7 @@ import qualified Language.Haskell.Exts.SrcLoc as HSE
        (SrcLoc(..), SrcSpan(..))
 import IDE.Pane.SourceBuffer
        (useCandyFor, selectSourceBuf, fileSave, inActiveBufContext,
-        addLogRef, belongsToPackage, removeLintLogRefs)
+        addLogRef, dependsOnFile, removeLintLogRefs)
 import qualified Data.Text.IO as T (readFile)
 import Data.Text (Text)
 import IDE.TextEditor (TextEditor(..))
@@ -111,7 +111,7 @@ runHLint :: Either FilePath FilePath -> IDEAction
 runHLint (Right sourceFile) = do
     liftIO . debugM "leksah" $ "runHLint"
     packages <- maybe [] wsAllPackages <$> readIDE workspace
-    case sortBy (flip (comparing (length . ipdPackageDir))) $ filter (belongsToPackage sourceFile) packages of
+    case sortBy (flip (comparing (length . ipdPackageDir))) $ filter (`dependsOnFile` sourceFile) packages of
         (package:_) -> runHLint' package (Just sourceFile)
         _ -> liftIO . debugM "leksah" $ "runHLint package not found for " <> sourceFile
 runHLint (Left cabalFile) = do

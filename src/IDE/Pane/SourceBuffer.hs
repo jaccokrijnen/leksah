@@ -86,9 +86,9 @@ module IDE.Pane.SourceBuffer (
 ,   selectedLocation
 ,   recentSourceBuffers
 ,   newTextBuffer
-,   belongsToPackages
-,   belongsToPackages'
-,   belongsToPackage
+,   dependentPackages
+,   dependentPackages'
+,   dependsOnFile
 ,   belongsToWorkspace
 ,   belongsToWorkspace'
 ,   getIdentifierUnderCursorFromIter
@@ -1469,10 +1469,10 @@ insertTextAfterSelection str = do
             i2         <- forwardCharsC i1 (T.length realString)
             selectRange ebuf i1 i2
 
--- | Returns the packages to which this file belongs
---   uses the 'bufferProjCache' and might extend it
-belongsToPackages :: MonadIDE m => FilePath -> m [IDEPackage]
-belongsToPackages fp = do
+-- | Returns the packages in the workspace that depend on this file. The package
+-- itself and any reverse sandbox source dependencies.
+dependentPackages :: MonadIDE m => FilePath -> m [IDEPackage]
+dependentPackages fp = do
     bufferToProject' <-  readIDE bufferProjCache
     ws               <-  readIDE workspace
     case Map.lookup fp bufferToProject' of
@@ -1480,23 +1480,23 @@ belongsToPackages fp = do
         Nothing -> case ws of
                         Nothing   -> return []
                         Just workspace -> do
-                            let res = filter (belongsToPackage fp) (wsPackages workspace)
+                            let res = filter (`dependsOnFile` fp) (wsPackages workspace)
                             modifyIDE_ (\ide -> ide{bufferProjCache = Map.insert fp res bufferToProject'})
                             return res
 
--- | Returns the packages to which this buffer belongs
---   uses the 'bufferProjCache' and might extend it
-belongsToPackages' :: MonadIDE m => IDEBuffer -> m [IDEPackage]
-belongsToPackages' = maybe (return []) belongsToPackages . fileName
+-- | Returns the packages in the workspace that depend on this buffer. The package
+-- itself and any reverse sandbox source dependencies.
+dependentPackages' :: MonadIDE m => IDEBuffer -> m [IDEPackage]
+dependentPackages' = maybe (return []) dependentPackages . fileName
 
--- | Checks whether a file belongs to a package (includes files in
--- sandbox source dirs)
-belongsToPackage :: FilePath -> IDEPackage -> Bool
-belongsToPackage f = any (`isSubPath` f) . ipdAllDirs
+-- | Checks whether a package depends on a file (either directly
+-- or because it is a transitive add-source depency)
+dependsOnFile :: IDEPackage -> FilePath -> Bool
+dependsOnFile pkg f = any (`isSubPath` f) (ipdAllDirs pkg)
 
 -- | Checks whether a file belongs to the workspace
 belongsToWorkspace :: MonadIDE m => FilePath -> m Bool
-belongsToWorkspace fp = liftM (not . null) (belongsToPackages fp)
+belongsToWorkspace fp = liftM (not . null) (dependentPackages fp)
 
 -- | Checks whether a file belongs to the workspace
 belongsToWorkspace' :: MonadIDE m => IDEBuffer -> m Bool

@@ -801,7 +801,7 @@ debugStart = do
                         modifyIDE_ (\ide -> ide {debugState = Nothing, autoCommand = return ()})
                         triggerEventIDE (Sensitivity [(SensitivityInterpreting, False)])
                         -- Kick of a build if one is not already due
-                        modifiedPacks <- fileCheckAll belongsToPackages'
+                        modifiedPacks <- fileCheckAll dependentPackages'
                         let modified = not (null modifiedPacks)
                         prefs <- readIDE prefs
                         when (not modified && backgroundBuild prefs) $ do

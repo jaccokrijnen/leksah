@@ -79,7 +79,7 @@ import qualified Control.Exception as Exc (SomeException(..), throw, Exception)
 import qualified Data.Map as  Map (empty)
 import IDE.Pane.SourceBuffer
        (belongsToWorkspace, IDEBuffer(..), maybeActiveBuf, fileOpenThis,
-        fileCheckAll, belongsToPackages')
+        fileCheckAll, dependentPackages')
 import System.Glib.Attributes (AttrOp(..), set)
 import Graphics.UI.Gtk.General.Enums (WindowPosition(..))
 import Control.Applicative ((<$>))
@@ -473,7 +473,7 @@ backgroundMake = catchIDE (do
     prefs       <- readIDE prefs
     debug       <- isJust <$> readIDE debugState
     modifiedPacks <- if saveAllBeforeBuild prefs
-                        then fileCheckAll belongsToPackages'
+                        then fileCheckAll dependentPackages'
                         else return []
     let isModified = not (null modifiedPacks)
     when isModified $ do
