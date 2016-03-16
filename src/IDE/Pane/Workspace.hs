@@ -50,7 +50,8 @@ import Graphics.UI.Gtk
         cellRendererPixbufNew, cellRendererTextNew, treeViewSetModel,
         treeViewNew, treeStoreNew, castToWidget, TreeStore, TreeView,
         ScrolledWindow, treeViewRowExpanded, treeStoreGetTree, Menu(..),
-        MenuItem(..), treeStoreSetValue)
+        MenuItem(..), treeStoreSetValue, containerRemove, Label,
+        widgetShowAll, labelNew, HBox, hBoxNew)
 import Data.Maybe
        (fromJust, fromMaybe, maybeToList, listToMaybe, isJust)
 import Control.Monad (forM, void, when)
@@ -243,8 +244,10 @@ canExpand record pkg = case record of
 
 -- | The representation of the Workspace pane
 data WorkspacePane        =   WorkspacePane {
-    scrolledView    ::   ScrolledWindow
+    box             ::   HBox
+,   scrolledView    ::   ScrolledWindow
 ,   treeView        ::   TreeView
+,   emptyMessage    ::   Label
 ,   recordStore     ::   TreeStore WorkspaceRecord
 } deriving Typeable
 
@@ -257,7 +260,7 @@ data WorkspaceState = WorkspaceState
 instance Pane WorkspacePane IDEM where
     primPaneName _  =   __ "Workspace"
     getAddedIndex _ =   0
-    getTopWidget    =   castToWidget . scrolledView
+    getTopWidget    =   castToWidget . box
     paneId b        =   "*Workspace"
 
 instance RecoverablePane WorkspacePane WorkspaceState IDEM where
@@ -302,10 +305,15 @@ instance RecoverablePane WorkspacePane WorkspaceState IDEM where
         sel <- treeViewGetSelection treeView
         -- treeSelectionSetMode sel SelectionSingle
 
+
+        box <- hBoxNew True 0
+
         scrolledView <- scrolledWindowNew Nothing Nothing
         scrolledWindowSetShadowType scrolledView ShadowIn
         containerAdd scrolledView treeView
         scrolledWindowSetPolicy scrolledView PolicyAutomatic PolicyAutomatic
+
+        emptyMessage <- labelNew (Just ("No workspace open" :: Text))
 
         let wsPane = WorkspacePane {..}
 
@@ -389,9 +397,20 @@ refresh pane = do
     let store = recordStore pane
     let view  = treeView pane
 
-    workspaceTryQuiet $ do
-        packages <- sort . wsPackages <$> ask
-        setChildren Nothing store view [] (map PackageRecord packages)
+    mbWs <- readIDE workspace
+    case mbWs of
+        Just ws -> flip runWorkspace ws $ do
+            liftIO $ do
+                containerRemove (box pane) (emptyMessage pane)
+                containerAdd (box pane) (scrolledView pane)
+                widgetShowAll (box pane)
+            packages <- sort . wsPackages <$> ask
+            setChildren Nothing store view [] (map PackageRecord packages)
+        Nothing -> do
+            liftIO $ do
+                containerRemove (box pane) (scrolledView pane)
+                containerAdd (box pane) (emptyMessage pane)
+                widgetShowAll (box pane)
 
 
 -- | Mutates the 'TreeStore' with the given TreePath as root to attach new
